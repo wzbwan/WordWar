@@ -31,5 +31,6 @@ export async function POST(req: NextRequest) {
   const ch = db.prepare('SELECT level, exp, money, atk, def, hp, hp_max, dodge_index, crit_index, dead_remaining_ms FROM characters WHERE user_id=?').get(p.uid);
   const b = getEquipBonuses(db, p.uid);
   const eff = { ...ch, atk: ch.atk + b.add_atk, def: ch.def + b.add_def, hp_max: (ch.hp_max||ch.hp) + b.add_max_hp, dodge_index: (ch.dodge_index||10) + (b.add_dodge||0), crit_index: (ch.crit_index||10) + (b.add_crit||0) };
-  return Response.json({ ok: true, player: { ...eff, maxHp: eff.hp_max, deadRemaining: ch.dead_remaining_ms || 0 } });
+  const u = db.prepare('SELECT id, username FROM users WHERE id=?').get(p.uid);
+  return Response.json({ ok: true, player: { ...eff, id: u.id, username: u.username, maxHp: eff.hp_max, deadRemaining: ch.dead_remaining_ms || 0 } });
 }

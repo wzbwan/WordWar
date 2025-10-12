@@ -33,6 +33,30 @@ function useToken() {
   return useMemo(() => (typeof window !== "undefined" ? localStorage.getItem("token") : null), []);
 }
 
+// Cross-platform UUID (polyfill for older Safari/iPadOS)
+function uid(): string {
+  try {
+    const g: any = (typeof globalThis !== 'undefined' ? globalThis : window) as any;
+    const c = g?.crypto || g?.msCrypto;
+    if (c?.randomUUID) return c.randomUUID();
+    if (c?.getRandomValues) {
+      const buf = new Uint8Array(16);
+      c.getRandomValues(buf);
+      buf[6] = (buf[6] & 0x0f) | 0x40; // version 4
+      buf[8] = (buf[8] & 0x3f) | 0x80; // variant
+      const toHex = (n: number) => n.toString(16).padStart(2, '0');
+      const b = Array.from(buf, toHex).join('');
+      return `${b.slice(0,8)}-${b.slice(8,12)}-${b.slice(12,16)}-${b.slice(16,20)}-${b.slice(20)}`;
+    }
+  } catch {}
+  // Fallback
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (ch) => {
+    const r = (Math.random() * 16) | 0;
+    const v = ch === 'x' ? r : (r & 0x3) | 0x8;
+    return v.toString(16);
+  });
+}
+
 export default function ChatPage() {
   const token = useToken();
   const [input, setInput] = useState("");
@@ -81,17 +105,17 @@ export default function ChatPage() {
         setCoinrain(undefined);
       }
       if (msg.type === "pvp.result") {
-        pushMsg({ id: crypto.randomUUID(), type: "battle", content: msg.payload.summary + " [查看详情]", ts: Date.now(), details: msg.payload.log });
+        pushMsg({ id: uid(), type: "battle", content: msg.payload.summary + " [查看详情]", ts: Date.now(), details: msg.payload.log });
       }
       if (msg.type === "monster.spawn") {
-        pushMsg({ id: crypto.randomUUID(), type: "system", content: msg.payload.text, ts: Date.now() });
+        pushMsg({ id: uid(), type: "system", content: msg.payload.text, ts: Date.now() });
       }
       if (msg.type === "monster.state") {
         setMonster({ hp: msg.payload.hp, max_hp: msg.payload.max_hp, cell: msg.payload.cell, endsAt: msg.payload.endsAt });
       }
       if (msg.type === "monster.end") {
         setMonster(undefined);
-        pushMsg({ id: crypto.randomUUID(), type: "system", content: msg.payload.text, ts: Date.now() });
+        pushMsg({ id: uid(), type: "system", content: msg.payload.text, ts: Date.now() });
       }
     };
     const ping = setInterval(() => {
@@ -120,9 +144,9 @@ export default function ChatPage() {
     const res = await fetch("/api/exp/store", { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` } });
     const data = await res.json();
     if (!res.ok) {
-      pushMsg({ id: crypto.randomUUID(), type: "system", content: data?.error || "存点失败", ts: Date.now() });
+      pushMsg({ id: uid(), type: "system", content: data?.error || "存点失败", ts: Date.now() });
     } else {
-      pushMsg({ id: crypto.randomUUID(), type: "system", content: `成功存点：${data.bank} 分钟，共 +${data.gain} 经验，金钱 +${data.moneyGain}` , ts: Date.now() });
+      pushMsg({ id: uid(), type: "system", content: `成功存点：${data.bank} 分钟，共 +${data.gain} 经验，金钱 +${data.moneyGain}` , ts: Date.now() });
       // 拉取最新属性展示
       fetch("/api/player", { headers: { Authorization: `Bearer ${token}` } })
         .then((r) => r.json())
@@ -167,7 +191,7 @@ export default function ChatPage() {
     const data = await res.json().catch(()=>({}));
     if (!res.ok) { alert(data?.error||'操作失败'); return; }
     await loadInventory();
-    if (data?.player) setPlayer(data.player);
+    if (data?.player) { const prev = useStore.getState().player as any; setPlayer({ ...(prev||{}), ...data.player }); }
     else fetch("/api/player", { headers: { Authorization: `Bearer ${token}` } }).then(r=>r.json()).then(d=>setPlayer(d.player)).catch(()=>{});
   }
   async function doUnequip(slot: string) {
@@ -175,7 +199,7 @@ export default function ChatPage() {
     const data = await res.json().catch(()=>({}));
     if (!res.ok) { alert(data?.error||'操作失败'); return; }
     await loadInventory();
-    if (data?.player) setPlayer(data.player);
+    if (data?.player) { const prev = useStore.getState().player as any; setPlayer({ ...(prev||{}), ...data.player }); }
     else fetch("/api/player", { headers: { Authorization: `Bearer ${token}` } }).then(r=>r.json()).then(d=>setPlayer(d.player)).catch(()=>{});
   }
   async function doUse(id: number) {
@@ -183,7 +207,7 @@ export default function ChatPage() {
     const data = await res.json();
     if (!res.ok) { alert(data?.error || '使用失败'); return; }
     await loadInventory();
-    if (data?.player) setPlayer(data.player);
+    if (data?.player) { const prev = useStore.getState().player as any; setPlayer({ ...(prev||{}), ...data.player }); }
     else fetch("/api/player", { headers: { Authorization: `Bearer ${token}` } }).then(r=>r.json()).then(d=>setPlayer(d.player)).catch(()=>{});
   }
   async function doDrop(id: number) {
@@ -212,7 +236,7 @@ export default function ChatPage() {
   }
 
   return (
-    <div className="grid gap-4" style={{ gridTemplateColumns: '280px 1fr 320px' }}>
+    <div className="grid gap-4" style={{ gridTemplateColumns: '200px 1fr 280px' }}>
       <div>
         <div className="bg-slate-800 border border-slate-700 rounded p-3">
           <div className="font-semibold mb-2">在线玩家</div>

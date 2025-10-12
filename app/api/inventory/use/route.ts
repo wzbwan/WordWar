@@ -25,16 +25,18 @@ export async function POST(req: NextRequest) {
   const row = db.prepare(`SELECT inv.*, it.category, it.add_current_hp FROM inventory inv JOIN item_templates it ON it.id=inv.template_id WHERE inv.id=? AND inv.user_id=?`).get(itemId, p.uid);
   if (!row) return Response.json({ error: '物品不存在' }, { status: 404 });
   if (row.category !== 'consumable') return Response.json({ error: '该物品不可使用' }, { status: 400 });
-  const ch = db.prepare('SELECT hp, hp_max FROM characters WHERE user_id=?').get(p.uid);
+  const ch = db.prepare('SELECT level, exp, money, atk, def, hp, hp_max, dodge_index, crit_index, dead_remaining_ms FROM characters WHERE user_id=?').get(p.uid);
+  const b = getEquipBonuses(db, p.uid);
+  const effMax = (ch.hp_max || ch.hp) + (b.add_max_hp || 0);
   const inc = Math.max(0, row.add_current_hp || 0);
-  const newHp = Math.min(ch.hp_max, ch.hp + inc);
+  const newHp = Math.min(effMax, ch.hp + inc);
   db.prepare('UPDATE characters SET hp=? WHERE user_id=?').run(newHp, p.uid);
   if (row.count > 1) {
     db.prepare('UPDATE inventory SET count=count-1 WHERE id=?').run(row.id);
   } else {
     db.prepare('DELETE FROM inventory WHERE id=?').run(row.id);
   }
-  const b = getEquipBonuses(db, p.uid);
   const eff = { ...ch, hp: newHp, atk: ch.atk + b.add_atk, def: ch.def + b.add_def, hp_max: (ch.hp_max||ch.hp) + b.add_max_hp, dodge_index: (ch.dodge_index||10) + (b.add_dodge||0), crit_index: (ch.crit_index||10) + (b.add_crit||0) };
-  return Response.json({ ok: true, hp: newHp, player: { ...eff, maxHp: eff.hp_max } });
+  const u = db.prepare('SELECT id, username FROM users WHERE id=?').get(p.uid);
+  return Response.json({ ok: true, hp: newHp, player: { ...eff, id: u.id, username: u.username, maxHp: eff.hp_max } });
 }
