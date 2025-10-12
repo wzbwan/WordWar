@@ -15,7 +15,8 @@ const server = http.createServer((req, res) => {
       if (process.env.ADMIN_KEY && key !== process.env.ADMIN_KEY) {
         res.statusCode = 403; return res.end('Forbidden');
       }
-      spawnCoinRain();
+      const tpl = Number(url.searchParams.get('tpl')||1);
+      spawnCoinRainByTemplate(tpl);
       res.statusCode = 200; return res.end('ok');
     }
     if (url.pathname === '/admin/monster') {
@@ -23,7 +24,8 @@ const server = http.createServer((req, res) => {
       if (process.env.ADMIN_KEY && key !== process.env.ADMIN_KEY) {
         res.statusCode = 403; return res.end('Forbidden');
       }
-      spawnMonster();
+      const tpl = Number(url.searchParams.get('tpl')||1);
+      spawnMonsterByTemplate(tpl);
       res.statusCode = 200; return res.end('ok');
     }
     if (url.pathname === '/admin/fix_money') {
@@ -80,8 +82,43 @@ function pushSystem(text) {
   } catch {}
 }
 
+function getCharBase(uid) {
+  return db.prepare('SELECT level, exp, money, atk, def, hp, hp_max, dodge_index, crit_index, last_passive_money_ts, last_exp_time, exp_bank, dead_remaining_ms FROM characters WHERE user_id=?').get(uid);
+}
+function getEquipBonuses(uid) {
+  const rows = db.prepare(`
+    SELECT it.* FROM inventory inv
+    JOIN item_templates it ON it.id = inv.template_id
+    WHERE inv.user_id=? AND inv.equipped_slot IS NOT NULL
+  `).all(uid);
+  const sum = rows.reduce((acc, r) => ({
+    add_atk: acc.add_atk + (r.add_atk||0),
+    add_def: acc.add_def + (r.add_def||0),
+    add_max_hp: acc.add_max_hp + (r.add_max_hp||0),
+    add_dodge: acc.add_dodge + (r.add_dodge||0),
+    add_attack_speed: acc.add_attack_speed + (r.add_attack_speed||0),
+    add_crit: acc.add_crit + (r.add_crit||0)
+  }), {add_atk:0,add_def:0,add_max_hp:0,add_dodge:0,add_attack_speed:0,add_crit:0});
+  return sum;
+}
 function getChar(uid) {
-  return db.prepare('SELECT level, exp, money, atk, def, hp, last_passive_money_ts, last_exp_time, exp_bank FROM characters WHERE user_id=?').get(uid);
+  const ch = getCharBase(uid);
+  if (!ch) return null;
+  const b = getEquipBonuses(uid);
+  return { ...ch,
+    atk: ch.atk + b.add_atk,
+    def: ch.def + b.add_def,
+    hp_max: (ch.hp_max || ch.hp) + b.add_max_hp,
+    dodge_index: (ch.dodge_index||0) + (b.add_dodge||0),
+    crit_index: (ch.crit_index||0) + (b.add_crit||0),
+  };
+}
+
+function chanceFromIndex(R){
+  const pMin=0.03, pMax=0.70, R0=10, K=204;
+  const Rp=Math.max(0,(R||0)-R0);
+  const p=pMax-(pMax-pMin)*Math.exp(-Rp/K);
+  return Math.min(pMax, Math.max(pMin,p));
 }
 
 function setMoney(uid, money) {
@@ -94,19 +131,21 @@ function addMoney(uid, delta) {
   const m = Math.max(0, (ch.money || 0) + delta);
   setMoney(uid, m);
   sendTo(uid, 'player.update', {
-    level: ch.level, exp: ch.exp, money: m, atk: ch.atk, def: ch.def, hp: ch.hp,
+    level: ch.level, exp: ch.exp, money: m, atk: ch.atk, def: ch.def, hp: ch.hp, maxHp: ch.hp_max, dodge_index: ch.dodge_index, crit_index: ch.crit_index, deadRemaining: ch.dead_remaining_ms || 0,
   });
 }
 
 // Coin rain state
-let activeCoinRain = null; // { id:number, startedAt, endsAt, picked: Map<uid, count> }
+let activeCoinRain = null; // { id:number, startedAt, endsAt, picked: Map<uid, count>, conf }
 
-function spawnCoinRain() {
+function spawnCoinRainByTemplate(tplId) {
   if (activeCoinRain) return; // avoid overlap
+  const cfg = db.prepare('SELECT * FROM coinrain_templates WHERE id=?').get(tplId);
+  if (!cfg) return;
   const now = Date.now();
   const res = db.prepare('INSERT INTO coinrain_events (started_at) VALUES (?)').run(now);
   const id = Number(res.lastInsertRowid);
-  activeCoinRain = { id, startedAt: now, endsAt: now + 20000, picked: new Map() };
+  activeCoinRain = { id, startedAt: now, endsAt: now + cfg.duration_ms, picked: new Map(), conf: cfg };
   broadcast('coinrain.spawn', { event_id: id });
   setTimeout(() => {
     if (!activeCoinRain) return;
@@ -114,22 +153,25 @@ function spawnCoinRain() {
     db.prepare('UPDATE coinrain_events SET ended_at=? WHERE id=?').run(endedAt, id);
     broadcast('coinrain.end', { event_id: id });
     activeCoinRain = null;
-  }, 20000);
+  }, cfg.duration_ms);
 }
 
 // Monster state
-let activeMonster = null; // { id:number, hp, max_hp, atk, def, reward_pool, started_at, damage: Map<uid, dmg>, cell:number, endsAt:number }
+let activeMonster = null; // { id:number, name:string, hp, max_hp, atk, def, money_pool, exp_pool, counter_chance, started_at, damage: Map<uid, dmg>, cell:number, endsAt:number, lastHitter:number|null, reward_item_id?:number }
 const MONSTER_DURATION_MS = 60_000;
 
-function spawnMonster() {
+function spawnMonsterByTemplate(tplId) {
   if (activeMonster) return;
+  const tpl = db.prepare('SELECT * FROM monster_templates WHERE id=?').get(tplId);
+  if (!tpl) return;
   const now = Date.now();
-  const base = { hp: 6000, max_hp: 6000, atk: 6, def: 24, reward_pool: 30000 };
+  const rewardItems = (tpl.last_hit_reward_items && String(tpl.last_hit_reward_items).trim()) ? String(tpl.last_hit_reward_items).split(',').map(s=>Number(s.trim())).filter(n=>Number.isFinite(n) && n>0) : null;
+  const base = { name: tpl.name, hp: tpl.hp, max_hp: tpl.hp, atk: tpl.atk, def: tpl.def, money_pool: tpl.money_pool, exp_pool: tpl.exp_pool, counter_chance: tpl.counter_chance, reward_item_id: tpl.last_hit_reward_item_id, reward_items: rewardItems };
   const res = db.prepare('INSERT INTO monsters (hp, max_hp, atk, def, reward_pool, started_at) VALUES (?,?,?,?,?,?)')
-    .run(base.hp, base.max_hp, base.atk, base.def, base.reward_pool, now);
+    .run(base.hp, base.max_hp, base.atk, base.def, base.money_pool, now);
   const id = Number(res.lastInsertRowid);
-  activeMonster = { id, ...base, started_at: now, damage: new Map(), cell: Math.floor(Math.random()*9), endsAt: now + MONSTER_DURATION_MS };
-  broadcast('monster.spawn', { text: `普通怪出现！HP ${activeMonster.hp}/${activeMonster.max_hp} 奖励池 ${activeMonster.reward_pool}` });
+  activeMonster = { id, ...base, started_at: now, damage: new Map(), cell: Math.floor(Math.random()*9), endsAt: now + MONSTER_DURATION_MS, lastHitter: null };
+  broadcast('monster.spawn', { text: `怪物出现：${tpl.name}！HP ${activeMonster.hp}/${activeMonster.max_hp} 金币池 ${activeMonster.money_pool}` });
   broadcast('monster.state', { hp: activeMonster.hp, max_hp: activeMonster.max_hp, cell: activeMonster.cell, endsAt: activeMonster.endsAt });
 }
 
@@ -140,15 +182,60 @@ function endMonster(killed) {
   const entries = Array.from(activeMonster.damage.entries());
   const sumDamage = entries.reduce((s, [,d])=>s+d, 0) || 1;
   const results = [];
+  let lastHitItemIdForText = null;
   if (killed) {
     for (const [uid, dmg] of entries) {
       const share = dmg / sumDamage;
       const threshold = 0.003; // 0.3%
       let reward = 0;
-      if (share >= threshold) reward = Math.floor(activeMonster.reward_pool * share);
+      if (share >= threshold) reward = Math.floor((activeMonster.money_pool||0) * share);
       if (reward > 0) addMoney(uid, reward);
+      if (share >= threshold && (activeMonster.exp_pool||0) > 0) {
+        try {
+          const c = getCharBase(uid);
+          let level = c.level, exp = c.exp, atk=c.atk, def=c.def, hp=c.hp, hp_max=c.hp_max, dodge_index=c.dodge_index||10, crit_index=c.crit_index||10;
+          exp += Math.floor((activeMonster.exp_pool||0) * share);
+          while (exp >= (12 + 2*(level-1))) {
+            exp -= (12 + 2*(level-1));
+            level += 1; atk+=4; def+=2; hp+=18; hp_max+=18;
+          }
+          if (c.level !== level) {
+            // on any level increase, restore full hp
+            hp = hp_max;
+            const gain = level - c.level;
+            dodge_index += gain; crit_index += gain;
+          }
+          db.prepare('UPDATE characters SET level=?, exp=?, atk=?, def=?, hp=?, hp_max=?, dodge_index=?, crit_index=? WHERE user_id=?').run(level, exp, atk, def, hp, hp_max, dodge_index, crit_index, uid);
+          const eff = getChar(uid);
+          sendTo(uid, 'player.update', { level: eff.level, exp: eff.exp, money: eff.money, atk: eff.atk, def: eff.def, hp: eff.hp, maxHp: eff.hp_max, dodge_index: eff.dodge_index, crit_index: eff.crit_index });
+        } catch {}
+      }
       try { db.prepare('INSERT OR REPLACE INTO monster_damage (monster_id, user_id, damage) VALUES (?,?,?)').run(activeMonster.id, uid, dmg); } catch {}
       results.push({ uid, dmg, reward });
+    }
+    let lastHitItemId = null;
+    if (activeMonster.lastHitter) {
+      if (activeMonster.reward_items && activeMonster.reward_items.length>0) {
+        const arr = activeMonster.reward_items;
+        lastHitItemId = arr[Math.floor(Math.random()*arr.length)] || null;
+      } else if (activeMonster.reward_item_id) {
+        lastHitItemId = activeMonster.reward_item_id;
+      }
+    }
+    if (lastHitItemId && activeMonster.lastHitter) {
+      try {
+        const uid = activeMonster.lastHitter;
+        const bag = db.prepare('SELECT bag_slot FROM inventory WHERE user_id=? AND bag_slot IS NOT NULL').all(uid).map(r=>r.bag_slot);
+        let slot = -1; for (let i=0;i<24;i++){ if (!bag.includes(i)) { slot=i; break; } }
+        if (slot>=0) {
+          db.prepare('INSERT INTO inventory (user_id, template_id, bag_slot, count) VALUES (?,?,?,1)').run(uid, lastHitItemId, slot);
+          const it = db.prepare('SELECT name FROM item_templates WHERE id=?').get(lastHitItemId);
+          sendTo(uid, 'system', { id: uuidv4(), type:'system', content: `获得最后一击奖励物品：${it?.name || lastHitItemId}` , ts: Date.now() });
+          lastHitItemIdForText = lastHitItemId;
+        } else {
+          sendTo(uid, 'system', { id: uuidv4(), type:'system', content: '背包已满，无法获得最后一击奖励物品', ts: Date.now() });
+        }
+      } catch {}
     }
   }
   results.sort((a,b)=>b.dmg-a.dmg);
@@ -156,7 +243,21 @@ function endMonster(killed) {
     const u = db.prepare('SELECT username FROM users WHERE id=?').get(r.uid);
     return `${u?.username || r.uid}: 伤害${r.dmg}${killed?` 奖励${r.reward}`:''}`;
   }).join(' | ');
-  const text = killed ? `怪物被击杀！功劳榜：${top10}` : '时间到，怪物逃跑了。';
+  let text = killed ? `${activeMonster.name} 被击杀！功劳榜：${top10}` : '时间到，怪物逃跑了。';
+  if (killed && activeMonster.lastHitter) {
+    try {
+      const u = db.prepare('SELECT username FROM users WHERE id=?').get(activeMonster.lastHitter);
+      let itName = null;
+      if (lastHitItemIdForText) {
+        const it = db.prepare('SELECT name FROM item_templates WHERE id=?').get(lastHitItemIdForText);
+        itName = it?.name || null;
+      } else if (activeMonster.reward_item_id) {
+        const it = db.prepare('SELECT name FROM item_templates WHERE id=?').get(activeMonster.reward_item_id);
+        itName = it?.name || null;
+      }
+      if (u && itName) text += ` 最后一击者 ${u.username} 获得 ${itName}`;
+    } catch {}
+  }
   broadcast('monster.end', { text });
   activeMonster = null;
 }
@@ -206,6 +307,24 @@ function tickExpBank() {
   for (const uid of online.keys()) {
     const ch = getChar(uid);
     if (!ch) continue;
+    // Death countdown (online only)
+    const base = getCharBase(uid);
+    if ((base.dead_remaining_ms||0) > 0) {
+      const remain = Math.max(0, (base.dead_remaining_ms||0) - 1000);
+      if (remain === 0) {
+        // revive: restore full HP
+        try { db.prepare('UPDATE characters SET dead_remaining_ms=?, hp=hp_max WHERE user_id=?').run(0, uid); } catch {}
+        const eff = getChar(uid);
+        sendTo(uid, 'player.update', { level: eff.level, exp: eff.exp, money: eff.money, atk: eff.atk, def: eff.def, hp: eff.hp_max, maxHp: eff.hp_max, dodge_index: eff.dodge_index, crit_index: eff.crit_index, deadRemaining: 0 });
+        sendTo(uid, 'system', { id: uuidv4(), type:'system', content: '你已复活。', ts: Date.now() });
+      } else {
+        try { db.prepare('UPDATE characters SET dead_remaining_ms=? WHERE user_id=?').run(remain, uid); } catch {}
+        const eff = getChar(uid);
+        sendTo(uid, 'player.update', { level: eff.level, exp: eff.exp, money: eff.money, atk: eff.atk, def: eff.def, hp: eff.hp, maxHp: eff.hp_max, dodge_index: eff.dodge_index, crit_index: eff.crit_index, deadRemaining: remain });
+        // while dead, skip exp bank accumulation below
+        continue;
+      }
+    }
     const last = ch.last_exp_time || 0;
     if (last === 0) {
       db.prepare('UPDATE characters SET last_exp_time = ? WHERE user_id = ?').run(now, uid);
@@ -220,19 +339,33 @@ function tickExpBank() {
 
 // PVP simulation
 function simulatePvp(a, b) {
-  // a and b: { name, atk, def, hp }
+  // a and b: { name, atk, def, hp, dodge_index?, crit_index? }
   const log = [];
   let A = { ...a }, B = { ...b };
   let turn = 0;
   while (A.hp > 0 && B.hp > 0 && log.length < 50) {
     if (turn % 2 === 0) {
-      const dmg = Math.max(1, A.atk - B.def);
-      B.hp -= dmg;
-      log.push(`${A.name} 对 ${B.name} 造成 ${dmg} 伤害，剩余HP ${Math.max(0, B.hp)}`);
+      const dodge = Math.random() < chanceFromIndex(B.dodge_index||0);
+      if (dodge) {
+        log.push(`${B.name} 躲闪成功！`);
+      } else {
+        let dmg = Math.max(1, A.atk - B.def);
+        const crit = Math.random() < chanceFromIndex(A.crit_index||0);
+        if (crit) dmg = Math.floor(dmg * 2.2);
+        B.hp -= dmg;
+        log.push(`${A.name}${crit?' 暴击':''} 对 ${B.name} 造成 ${dmg} 伤害，剩余HP ${Math.max(0, B.hp)}`);
+      }
     } else {
-      const dmg = Math.max(1, B.atk - A.def);
-      A.hp -= dmg;
-      log.push(`${B.name} 对 ${A.name} 造成 ${dmg} 伤害，剩余HP ${Math.max(0, A.hp)}`);
+      const dodge = Math.random() < chanceFromIndex(A.dodge_index||0);
+      if (dodge) {
+        log.push(`${A.name} 躲闪成功！`);
+      } else {
+        let dmg = Math.max(1, B.atk - A.def);
+        const crit = Math.random() < chanceFromIndex(B.crit_index||0);
+        if (crit) dmg = Math.floor(dmg * 2.2);
+        A.hp -= dmg;
+        log.push(`${B.name}${crit?' 暴击':''} 对 ${A.name} 造成 ${dmg} 伤害，剩余HP ${Math.max(0, A.hp)}`);
+      }
     }
     turn++;
   }
@@ -260,7 +393,7 @@ wss.on('connection', (ws) => {
       broadcast('user.list', list);
       pushSystem(`玩家 ${p.username} 加入了聊天室`);
       const ch = getChar(uid);
-      if (ch) sendTo(uid, 'player.update', { level: ch.level, exp: ch.exp, money: ch.money, atk: ch.atk, def: ch.def, hp: ch.hp });
+      if (ch) sendTo(uid, 'player.update', { level: ch.level, exp: ch.exp, money: ch.money, atk: ch.atk, def: ch.def, hp: ch.hp, maxHp: ch.hp_max, id: uid, username: p.username, dodge_index: ch.dodge_index, crit_index: ch.crit_index, deadRemaining: ch.dead_remaining_ms || 0 });
       return;
     }
 
@@ -281,14 +414,18 @@ wss.on('connection', (ws) => {
     }
 
     if (type === 'coinrain.hit') {
+      const base = getCharBase(uid);
+      if (base && (base.dead_remaining_ms||0) > 0) return; // dead cannot participate
       if (!activeCoinRain || Date.now() > activeCoinRain.endsAt) return;
+      const cap = activeCoinRain.conf?.per_user_cap ?? 5;
+      const value = activeCoinRain.conf?.coin_value ?? 500;
       const count = activeCoinRain.picked.get(uid) || 0;
-      if (count >= 5) {
+      if (count >= cap) {
         sendTo(uid, 'coinrain.result', { ok: false, reason: 'CAP_REACHED', picked: count });
         return;
       }
       activeCoinRain.picked.set(uid, count + 1);
-      addMoney(uid, 500);
+      addMoney(uid, value);
       try {
         const existing = db.prepare('SELECT coins_collected FROM coinrain_claims WHERE event_id=? AND user_id=?').get(activeCoinRain.id, uid);
         if (existing) {
@@ -303,12 +440,19 @@ wss.on('connection', (ws) => {
 
     if (type === 'pvp.challenge') {
       const targetId = payload?.targetId;
+      const selfBase = getCharBase(uid);
+      if (selfBase && (selfBase.dead_remaining_ms||0) > 0) return;
+      const targetBase = getCharBase(targetId);
+      if (targetBase && (targetBase.dead_remaining_ms||0) > 0) return;
       if (!online.has(targetId)) return;
       const aRow = db.prepare('SELECT username FROM users WHERE id=?').get(uid);
       const bRow = db.prepare('SELECT username FROM users WHERE id=?').get(targetId);
       const aCh = getChar(uid), bCh = getChar(targetId);
       if (!aCh || !bCh) return;
-      const { winner, log } = simulatePvp({ name: aRow.username, atk: aCh.atk, def: aCh.def, hp: aCh.hp }, { name: bRow.username, atk: bCh.atk, def: bCh.def, hp: bCh.hp });
+      const { winner, log } = simulatePvp(
+        { name: aRow.username, atk: aCh.atk, def: aCh.def, hp: aCh.hp, dodge_index: aCh.dodge_index, crit_index: aCh.crit_index },
+        { name: bRow.username, atk: bCh.atk, def: bCh.def, hp: bCh.hp, dodge_index: bCh.dodge_index, crit_index: bCh.crit_index }
+      );
       const summary = `${aRow.username} 对 ${bRow.username} 进行切磋，${winner} 获胜。`;
       sendTo(uid, 'pvp.result', { summary, log });
       sendTo(targetId, 'pvp.result', { summary, log });
@@ -321,12 +465,50 @@ wss.on('connection', (ws) => {
       const now = Date.now();
       if (now > activeMonster.endsAt) { endMonster(false); return; }
       if (cell !== activeMonster.cell) return; // miss
+      const baseBefore = getCharBase(uid);
+      if (baseBefore && (baseBefore.dead_remaining_ms||0) > 0) return; // dead cannot attack
       const ch = getChar(uid);
       if (!ch) return;
-      const dmg = Math.max(1, (ch.atk || 0) - activeMonster.def);
+      // Player attack with crit
+      let dmg = Math.max(1, (ch.atk || 0) - activeMonster.def);
+      const isCrit = Math.random() < chanceFromIndex(ch.crit_index||0);
+      if (isCrit) dmg = Math.floor(dmg * 2.2);
       activeMonster.hp = Math.max(0, activeMonster.hp - dmg);
       const prev = activeMonster.damage.get(uid) || 0;
       activeMonster.damage.set(uid, prev + dmg);
+      activeMonster.lastHitter = uid;
+      if (isCrit) {
+        sendTo(uid, 'system', { id: uuidv4(), type:'system', content: `你对怪物暴击，造成 ${dmg} 伤害！`, ts: Date.now() });
+      }
+      if (activeMonster.hp > 0 && Math.random() < (activeMonster.counter_chance || 0)) {
+        // Player may dodge counter
+        const dodged = Math.random() < chanceFromIndex(ch.dodge_index||0);
+        if (dodged) {
+          sendTo(uid, 'system', { id: uuidv4(), type:'system', content: '你躲闪了怪物的反击！', ts: Date.now() });
+        } else {
+          const cdmg = Math.max(1, (activeMonster.atk||0) - (ch.def||0));
+          const base = getCharBase(uid);
+          let newHp = Math.max(0, (base.hp||0) - cdmg);
+          let deadRemaining = base.dead_remaining_ms || 0;
+          if (newHp <= 0) {
+            // death: set countdown in ms
+            const reviveSec = 15 + 5 * Math.max(1, base.level||1);
+            deadRemaining = reviveSec * 1000;
+          }
+          try { db.prepare('UPDATE characters SET hp=?, dead_remaining_ms=? WHERE user_id=?').run(newHp, deadRemaining, uid); } catch {}
+          const eff = getChar(uid);
+          sendTo(uid, 'player.update', { level: eff.level, exp: eff.exp, money: eff.money, atk: eff.atk, def: eff.def, hp: newHp, maxHp: eff.hp_max, dodge_index: eff.dodge_index, crit_index: eff.crit_index, deadRemaining });
+          if (newHp <= 0) {
+            sendTo(uid, 'system', { id: uuidv4(), type:'system', content: `你已阵亡，等待复活……`, ts: Date.now() });
+            try {
+              const name = (online.get(uid)?.username) || (db.prepare('SELECT username FROM users WHERE id=?').get(uid)?.username) || uid;
+              pushSystem(`玩家 ${name} 阵亡`);
+            } catch {}
+          } else {
+            sendTo(uid, 'system', { id: uuidv4(), type:'system', content: `你被怪物击中，受到 ${cdmg} 伤害。`, ts: Date.now() });
+          }
+        }
+      }
       if (activeMonster.hp <= 0) {
         endMonster(true);
       } else {
@@ -356,9 +538,20 @@ setInterval(() => {
   tickExpBank();
 }, 1000);
 
-// Spawners
-setInterval(() => spawnCoinRain(), 1000 * 60 * 5); // every 5 min
-setInterval(() => spawnMonster(), 1000 * 60 * 3); // every 3 min
+// Scheduler based on DB scheduled_events
+setInterval(() => {
+  try {
+    const now = Date.now();
+    const rows = db.prepare('SELECT * FROM scheduled_events WHERE enabled=1').all();
+    for (const r of rows) {
+      if (now - (r.last_run_at||0) >= r.interval_sec*1000) {
+        if (r.type === 'monster') spawnMonsterByTemplate(r.template_id);
+        if (r.type === 'coinrain') spawnCoinRainByTemplate(r.template_id);
+        db.prepare('UPDATE scheduled_events SET last_run_at=? WHERE id=?').run(now, r.id);
+      }
+    }
+  } catch {}
+}, 1000);
 
 server.listen(PORT, () => {
   console.log(`[WS] listening on :${PORT}`);

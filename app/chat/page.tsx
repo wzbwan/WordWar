@@ -4,7 +4,7 @@ import { create } from "zustand";
 
 type Msg = { id: string; type: "chat" | "system" | "battle"; user?: string; content: string; ts: number; details?: string[] };
 type User = { id: number; username: string; level?: number };
-type Player = { id?: number; username?: string; level: number; exp: number; money: number; atk: number; def: number; hp: number; maxHp?: number };
+type Player = { id?: number; username?: string; level: number; exp: number; money: number; atk: number; def: number; hp: number; maxHp?: number; dodge_index?: number; crit_index?: number; deadRemaining?: number };
 
 type Store = {
   messages: Msg[];
@@ -41,6 +41,9 @@ export default function ChatPage() {
   const [pvpDetails, setPvpDetails] = useState<string[] | null>(null);
   const [nextHitAt, setNextHitAt] = useState<number>(0);
   const listRef = useRef<HTMLDivElement | null>(null);
+  const [invOpen, setInvOpen] = useState(false);
+  const [bag, setBag] = useState<any[]>([]);
+  const [equip, setEquip] = useState<any[]>([]);
 
   useEffect(() => {
     if (!token) {
@@ -64,7 +67,13 @@ export default function ChatPage() {
       if (msg.type === "chat.message") pushMsg(msg.payload);
       if (msg.type === "system") pushMsg(msg.payload);
       if (msg.type === "user.list") setUsers(msg.payload);
-      if (msg.type === "player.update") setPlayer(msg.payload);
+      if (msg.type === "player.update") {
+        const prev = useStore.getState().player as any;
+        const payload = msg.payload || {};
+        const norm = { ...payload } as any;
+        if (norm.hp_max && !norm.maxHp) norm.maxHp = norm.hp_max;
+        setPlayer({ ...(prev || {}), ...norm });
+      }
       if (msg.type === "coinrain.spawn") {
         setCoinrain({ event_id: msg.payload.event_id, endAt: Date.now() + 20000 });
       }
@@ -147,6 +156,61 @@ export default function ChatPage() {
     if (details && details.length) setPvpDetails(details);
   }
 
+  async function loadInventory() {
+    const res = await fetch('/api/inventory', { headers: { Authorization: `Bearer ${token}` } });
+    const data = await res.json();
+    if (res.ok) { setBag(data.bag||[]); setEquip(data.equip||[]); }
+  }
+
+  async function doEquip(id: number) {
+    const res = await fetch('/api/inventory/equip', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ itemId: id }) });
+    const data = await res.json().catch(()=>({}));
+    if (!res.ok) { alert(data?.error||'操作失败'); return; }
+    await loadInventory();
+    if (data?.player) setPlayer(data.player);
+    else fetch("/api/player", { headers: { Authorization: `Bearer ${token}` } }).then(r=>r.json()).then(d=>setPlayer(d.player)).catch(()=>{});
+  }
+  async function doUnequip(slot: string) {
+    const res = await fetch('/api/inventory/unequip', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ slot }) });
+    const data = await res.json().catch(()=>({}));
+    if (!res.ok) { alert(data?.error||'操作失败'); return; }
+    await loadInventory();
+    if (data?.player) setPlayer(data.player);
+    else fetch("/api/player", { headers: { Authorization: `Bearer ${token}` } }).then(r=>r.json()).then(d=>setPlayer(d.player)).catch(()=>{});
+  }
+  async function doUse(id: number) {
+    const res = await fetch('/api/inventory/use', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ itemId: id }) });
+    const data = await res.json();
+    if (!res.ok) { alert(data?.error || '使用失败'); return; }
+    await loadInventory();
+    if (data?.player) setPlayer(data.player);
+    else fetch("/api/player", { headers: { Authorization: `Bearer ${token}` } }).then(r=>r.json()).then(d=>setPlayer(d.player)).catch(()=>{});
+  }
+  async function doDrop(id: number) {
+    const res = await fetch('/api/inventory/drop', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ itemId: id }) });
+    if (!res.ok) { const t = await res.json().catch(()=>({error:'操作失败'})); alert(t.error||'操作失败'); return; }
+    await loadInventory();
+  }
+
+  function mapSlot2name(slot: string) {
+    ['weapon','hat','clothes','shoes','necklace','ring']
+    if (slot === 'weapon') {
+      return '武器';
+    }else if (slot === 'hat') {
+      return '帽子';
+    }else if (slot === 'clothes') {
+      return '衣服';
+    }else if (slot === 'shoes') {
+      return '鞋子';
+    }else if (slot === 'necklace') {
+      return '项链';
+    }else if (slot === 'ring') {
+      return '戒指';
+    }else{
+      return '装备？'
+    }
+  }
+
   return (
     <div className="grid gap-4" style={{ gridTemplateColumns: '280px 1fr 320px' }}>
       <div>
@@ -194,17 +258,27 @@ export default function ChatPage() {
                   <div className="h-full bg-emerald-600 rounded" style={{ width: `${Math.max(0, Math.min(100, Math.round(((player.hp) / (player.maxHp ?? player.hp)) * 100)))}%` }} />
                 </div>
               </div>
+              {player.deadRemaining && player.deadRemaining > 0 && (
+                <div className="text-rose-300 text-xs">已阵亡，复活倒计时：{Math.ceil((player.deadRemaining)/1000)}s</div>
+              )}
               <div className="w-full flex flex-row justify-between">
                 <div>武力：{player.atk}</div>
                 <div>防御：{player.def}</div>
               </div>
+              <div className="w-full flex flex-row justify-between">
+                <div>闪避指数：{player.dodge_index ?? '-'}</div>
+                <div>暴击指数：{player.crit_index ?? '-'}</div>
+              </div>
               <div>存款：{player.money}</div>
-              
+               
             </div>
           ) : (
             <div className="text-sm text-slate-400">加载中...</div>
           )}
-          <button onClick={storeExp} className="mt-3 w-full py-2 bg-emerald-600 hover:bg-emerald-500 rounded">存点</button>
+          <div className="mt-3 flex gap-2">
+            <button disabled={!!(player?.deadRemaining && player.deadRemaining>0)} onClick={storeExp} className="flex-1 py-2 bg-emerald-600 hover:bg-emerald-500 rounded disabled:opacity-50">存点</button>
+            <button onClick={async()=>{ setInvOpen(true); await loadInventory(); }} className="px-3 py-2 bg-slate-700 hover:bg-slate-600 rounded">物品栏</button>
+          </div>
         </div>
         <div className="bg-slate-800 border border-slate-700 rounded p-3">
           <div className="flex items-center justify-between">
@@ -215,18 +289,18 @@ export default function ChatPage() {
             </div>
           </div>
           {coinrain && (
-            <button onClick={hitCoin} className="mt-3 w-full py-2 bg-amber-600 hover:bg-amber-500 rounded">抢金币</button>
+            <button disabled={!!(player?.deadRemaining && player.deadRemaining>0)} onClick={hitCoin} className="mt-3 w-full py-2 bg-amber-600 hover:bg-amber-500 rounded disabled:opacity-50">抢金币</button>
           )}
           {monster ? (
             <div className="mt-3">
               <div className="grid grid-cols-3 gap-2">
                 {Array.from({ length: 9 }).map((_, i) => (
-                  <div key={i} className="aspect-square bg-slate-900 rounded flex items-center justify-center cursor-pointer select-none"
-                       onClick={() => hitMonster(i)}>
-                    {monster.cell === i && (
-                      <span className="text-2xl">👾</span>
-                    )}
-                  </div>
+                   <div key={i} className="aspect-square bg-slate-900 rounded flex items-center justify-center cursor-pointer select-none"
+                        onClick={() => { if (!(player?.deadRemaining && player.deadRemaining>0)) hitMonster(i); }}>
+                     {monster.cell === i && (
+                       <span className="text-2xl">👾</span>
+                     )}
+                   </div>
                 ))}
               </div>
               <div className="mt-3 h-3 bg-slate-900 rounded">
@@ -257,6 +331,107 @@ export default function ChatPage() {
           </div>
         </div>
       )}
+      {invOpen && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
+          <div className="bg-slate-800 border border-slate-700 rounded p-2 w-[90vw] max-w-3xl max-h-[80vh] overflow-y-auto scrollbar">
+            <div className="flex items-center justify-between mb-3">
+              <div className="font-semibold">物品栏</div>
+              <button onClick={() => setInvOpen(false)} className="text-slate-300 hover:text-white">关闭</button>
+            </div>
+            <div className="">
+              <div>
+                <div className="font-semibold mb-2">已装备</div>
+                <div className="flex flex-row justify-around mb-2">
+                {['weapon','hat','clothes','shoes','necklace','ring'].map((slot) => {
+                  const it = equip.find((e:any)=>e.slot===slot);
+                  return (
+                    <div key={slot} className="p-2 bg-slate-900 rounded text-xs flex flex-col items-center gap-1 relative group">
+                        <div>{mapSlot2name(slot)}</div>
+                        <div className="w-16 h-16 bg-slate-800 rounded flex items-center justify-center overflow-hidden">
+                          {it ? (
+                            <img src={it.url || 'https://word-war.tos-cn-beijing.volces.com/fc13.png'} alt={it.name} className="w-8 h-8 object-contain" />
+                          ) : (
+                            <span className="text-slate-600">空</span>
+                          )}
+                        </div>
+                        {it && (
+                          <div className="hidden group-hover:block absolute left-full top-0 ml-2 z-50 w-56 p-2 rounded bg-slate-800 border border-slate-700 shadow-lg">
+                            <div className="text-slate-100 font-semibold mb-1">{it.name}（{it.category}）</div>
+                            <div className="text-slate-300 space-y-0.5">
+                              {(() => {
+                                const rows: string[] = [];
+                                if (it.add_atk) rows.push(`增加攻击 +${it.add_atk}`);
+                                if (it.add_def) rows.push(`增加防御 +${it.add_def}`);
+                                if (it.add_max_hp) rows.push(`增加最大血量 +${it.add_max_hp}`);
+                                if (it.add_dodge) rows.push(`增加闪避指数 +${it.add_dodge}`);
+                                if (it.add_attack_speed) rows.push(`增加攻速 +${it.add_attack_speed}`);
+                                if (it.add_crit) rows.push(`增加暴击指数 +${it.add_crit}`);
+                                if (it.add_current_hp) rows.push(`使用：立刻恢复HP +${it.add_current_hp}`);
+                                return rows.map((r, idx) => (<div key={idx}>{r}</div>));
+                              })()}
+                            </div>
+                          </div>
+                        )}
+                        <div className="min-h-[16px] text-center break-all px-1">{it ? `${it.name}${it.count>1?` x${it.count}`:''}` : ''}</div>
+                        {it && (
+                          <div className="flex flex-wrap gap-1">
+                            {it.category !== 'consumable' && <button className="px-0.5 bg-slate-700 rounded" onClick={()=>doUnequip(slot)}>卸下</button>}
+                          </div>
+                        )}
+                      </div>
+                  );
+                })}
+                </div>
+              </div>
+              <div>
+                <div className="font-semibold mb-2">背包</div>
+                <div className="grid grid-cols-6 gap-2">
+                  {Array.from({ length: 24 }).map((_, i) => {
+                    const it = bag.find((b:any)=>b.bag_slot===i);
+                    return (
+                      <div key={i} className="p-2 bg-slate-900 rounded text-xs flex flex-col items-center gap-1 relative group">
+                        <div className="w-16 h-16 bg-slate-800 rounded flex items-center justify-center overflow-hidden">
+                          {it ? (
+                            <img src={it.url || 'https://word-war.tos-cn-beijing.volces.com/fc13.png'} alt={it.name} className="w-8 h-8 object-contain" />
+                          ) : (
+                            <span className="text-slate-600">空</span>
+                          )}
+                        </div>
+                        {it && (
+                          <div className="hidden group-hover:block absolute left-full top-0 ml-2 z-50 w-56 p-2 rounded bg-slate-800 border border-slate-700 shadow-lg">
+                            <div className="text-slate-100 font-semibold mb-1">{it.name}（{it.category}）</div>
+                            <div className="text-slate-300 space-y-0.5">
+                              {(() => {
+                                const rows: string[] = [];
+                                if (it.add_atk) rows.push(`增加攻击 +${it.add_atk}`);
+                                if (it.add_def) rows.push(`增加防御 +${it.add_def}`);
+                                if (it.add_max_hp) rows.push(`增加最大血量 +${it.add_max_hp}`);
+                                if (it.add_dodge) rows.push(`增加闪避指数 +${it.add_dodge}`);
+                                if (it.add_attack_speed) rows.push(`增加攻速 +${it.add_attack_speed}`);
+                                if (it.add_crit) rows.push(`增加暴击指数 +${it.add_crit}`);
+                                if (it.add_current_hp) rows.push(`使用：立刻恢复HP +${it.add_current_hp}`);
+                                return rows.map((r, idx) => (<div key={idx}>{r}</div>));
+                              })()}
+                            </div>
+                          </div>
+                        )}
+                        <div className="min-h-[16px] text-center break-all px-1">{it ? `${it.name}${it.count>1?` x${it.count}`:''}` : ''}</div>
+                        {it && (
+                          <div className="flex flex-wrap gap-1">
+                            {it.category !== 'consumable' && <button className="px-0.5 bg-slate-700 rounded" onClick={()=>doEquip(it.inv_id)}>装备</button>}
+                            {it.category === 'consumable' && <button className="px-0.5 bg-slate-700 rounded" onClick={()=>doUse(it.inv_id)}>使用</button>}
+                            <button className="px-0.5 bg-slate-700 rounded" onClick={()=>doDrop(it.inv_id)}>丢弃</button>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -278,7 +453,7 @@ function OnlineUsers({ users, selfId, onChallenge }: { users: User[]; selfId?: n
         {users.map((u) => (
           <div key={u.id} className="flex items-center justify-between text-sm">
             <button className="text-left hover:underline" onClick={() => viewUser(u.id)}>{u.username} {u.level ? `(Lv.${u.level})` : ''}</button>
-            {selfId !== u.id && (
+            {selfId && selfId !== u.id && (
               <button onClick={() => onChallenge(u.id)} className="text-xs text-indigo-300 hover:text-white">切磋</button>
             )}
           </div>
@@ -297,6 +472,7 @@ function OnlineUsers({ users, selfId, onChallenge }: { users: User[]; selfId?: n
               <div>金钱：{details.money}</div>
               <div>武力：{details.atk}</div>
               <div>防御：{details.def}</div>
+              <div className="flex justify-between"><span>闪避指数：{details.dodge_index ?? '-'}</span><span>暴击指数：{details.crit_index ?? '-'}</span></div>
               <div>
                 <div className="flex justify-between text-xs text-slate-400"><span>HP</span><span>{details.hp}/{details.maxHp ?? details.hp}</span></div>
                 <div className="h-2 bg-slate-900 rounded">

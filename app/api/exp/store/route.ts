@@ -25,7 +25,7 @@ export async function POST(req: NextRequest) {
     return Response.json({ error: "冷却中，无可存分钟" }, { status: 429 });
   }
 
-  let { level, exp, atk, def, hp } = ch;
+  let { level, exp, atk, def, hp, hp_max, dodge_index = 10, crit_index = 10 } = ch;
   const gain = 12 * bank;
   exp += gain;
   const perMin = 55 + 18 * (Math.max(1, level) - 1);
@@ -33,17 +33,27 @@ export async function POST(req: NextRequest) {
   const row = db.prepare("SELECT money FROM characters WHERE user_id=?").get(payload.uid);
   const newMoney = Math.max(0, Number(row?.money || 0) + moneyGain);
   let leveled = false;
+  let levelGain = 0;
   while (exp >= levelUpExp(level)) {
     exp -= levelUpExp(level);
     level += 1;
     atk += 4;
     hp += 18;
+    hp_max += 18;
     def += 2;
     leveled = true;
+    levelGain += 1;
   }
 
-  db.prepare("UPDATE characters SET level=?, exp=?, atk=?, def=?, hp=?, exp_bank=?, money=? WHERE user_id=?").run(
-    level, exp, atk, def, hp, 0, newMoney, payload.uid
+  if (leveled) {
+    // Level up restores full health
+    hp = hp_max;
+    dodge_index += levelGain;
+    crit_index += levelGain;
+  }
+
+  db.prepare("UPDATE characters SET level=?, exp=?, atk=?, def=?, hp=?, hp_max=?, dodge_index=?, crit_index=?, exp_bank=?, money=? WHERE user_id=?").run(
+    level, exp, atk, def, hp, hp_max, dodge_index, crit_index, 0, newMoney, payload.uid
   );
 
   if (leveled) {

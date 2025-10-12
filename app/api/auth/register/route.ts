@@ -17,9 +17,17 @@ export async function POST(req: NextRequest) {
     const user = db.prepare("SELECT id, username FROM users WHERE username=?").get(username);
     // create character
     const now2 = Date.now();
-    db.prepare("INSERT INTO characters (user_id, level, exp, money, atk, def, hp, last_exp_time, last_passive_money_ts, exp_bank) VALUES (?,?,?,?,?,?,?,?,?,?)").run(
-      user.id, 1, 0, 0, 12, 4, 80, now2, now2, 0
+    db.prepare("INSERT INTO characters (user_id, level, exp, money, atk, def, hp, hp_max, dodge_index, crit_index, last_exp_time, last_passive_money_ts, exp_bank) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)").run(
+      user.id, 1, 0, 0, 12, 4, 80, 80, 10, 10, now2, now2, 0
     );
+
+    // Give starter items if exist
+    try {
+      const wood = db.prepare('SELECT id FROM item_templates WHERE name=?').get('木剑');
+      const pot = db.prepare('SELECT id FROM item_templates WHERE name=?').get('小红瓶');
+      if (wood) db.prepare('INSERT INTO inventory (user_id, template_id, bag_slot) VALUES (?,?,?)').run(user.id, wood.id, 0);
+      if (pot) db.prepare('INSERT INTO inventory (user_id, template_id, bag_slot, count) VALUES (?,?,?,?)').run(user.id, pot.id, 1, 2);
+    } catch {}
     const token = signToken({ uid: user.id, username: user.username });
     return Response.json({ token });
   } catch (e:any) {
