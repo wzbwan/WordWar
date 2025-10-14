@@ -20,9 +20,9 @@ export async function GET(req: NextRequest) {
   if (!payload) return Response.json({ error: "无效令牌" }, { status: 401 });
 
   const db = getDB();
-  const ch = db.prepare("SELECT level, exp, money, atk, def, hp, hp_max, dodge_index, crit_index, dead_remaining_ms, exp_bank FROM characters WHERE user_id=?").get(payload.uid);
+  const ch = db.prepare("SELECT level, exp, money, atk, def, hp, hp_max, dodge_index, crit_index, dead_remaining_ms, exp_bank, job FROM characters WHERE user_id=?").get(payload.uid);
   const user = db.prepare("SELECT id, username FROM users WHERE id=?").get(payload.uid);
   const b = getEquipBonuses(db, payload.uid);
   const eff = { ...ch, atk: ch.atk + b.add_atk, def: ch.def + b.add_def, hp_max: (ch.hp_max||ch.hp) + b.add_max_hp, dodge_index: (ch.dodge_index||10) + (b.add_dodge||0), crit_index: (ch.crit_index||10) + (b.add_crit||0) };
-  return Response.json({ player: { ...eff, id: user.id, username: user.username, maxHp: eff.hp_max, deadRemaining: ch.dead_remaining_ms || 0, bank: ch.exp_bank || 0 } });
+  return Response.json({ player: { ...eff, id: user.id, username: user.username, maxHp: eff.hp_max, deadRemaining: ch.dead_remaining_ms || 0, bank: ch.exp_bank || 0, job: ch.job || null } });
 }

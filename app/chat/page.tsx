@@ -4,7 +4,7 @@ import { create } from "zustand";
 
 type Msg = { id: string; type: "chat" | "system" | "battle"; user?: string; content: string; ts: number; details?: string[] };
 type User = { id: number; username: string; level?: number };
-type Player = { id?: number; username?: string; level: number; exp: number; money: number; atk: number; def: number; hp: number; maxHp?: number; dodge_index?: number; crit_index?: number; deadRemaining?: number; bank?: number };
+type Player = { id?: number; username?: string; level: number; exp: number; money: number; atk: number; def: number; hp: number; maxHp?: number; dodge_index?: number; crit_index?: number; deadRemaining?: number; bank?: number; job?: string|null };
 
 type Store = {
   messages: Msg[];
@@ -72,6 +72,8 @@ export default function ChatPage() {
   const [invOpen, setInvOpen] = useState(false);
   const [bag, setBag] = useState<any[]>([]);
   const [equip, setEquip] = useState<any[]>([]);
+  const [chooseJobOpen, setChooseJobOpen] = useState(false);
+  const [battle, setBattle] = useState<{summary: string; logs: string[]; left:string; right:string} | null>(null);
 
   useEffect(() => {
     if (!token) {
@@ -80,7 +82,7 @@ export default function ChatPage() {
     }
     fetch("/api/player", { headers: { Authorization: `Bearer ${token}` } })
       .then((r) => r.json())
-      .then((d) => setPlayer(d.player))
+      .then((d) => { setPlayer(d.player); if (!d.player?.job) setChooseJobOpen(true); })
       .catch(() => {});
     // fetch all players list
     fetch('/api/players')
@@ -115,6 +117,12 @@ export default function ChatPage() {
       }
       if (msg.type === "pvp.result") {
         pushMsg({ id: uid(), type: "battle", content: msg.payload.summary + " [查看详情]", ts: Date.now(), details: msg.payload.log });
+        const m = /^(.+?) 对 (.+?) 进行切磋/.exec(msg.payload.summary||'');
+        const me = useStore.getState().player?.username;
+        const a = m?.[1]||''; const b = m?.[2]||'';
+        const left = me && (me===a || me===b) ? me : (a||b);
+        const right = left===a? b : a;
+        setBattle({ summary: msg.payload.summary, logs: msg.payload.log||[], left, right });
       }
       if (msg.type === "monster.spawn") {
         pushMsg({ id: uid(), type: "system", content: msg.payload.text, ts: Date.now() });
@@ -194,7 +202,21 @@ export default function ChatPage() {
   }
 
   function openDetails(details?: string[]) {
-    if (details && details.length) setPvpDetails(details);
+    if (details && details.length) {
+      // Try parse names from logs
+      let names = new Set<string>();
+      for (const line of details) {
+        const m1 = /^(.+?) 对 (.+?) 造成/.exec(line);
+        if (m1) { names.add(m1[1]); names.add(m1[2]); if (names.size>=2) break; }
+        const m2 = /^(.+?) 躲闪成功/.exec(line);
+        if (m2) names.add(m2[1]);
+      }
+      const arr = Array.from(names);
+      const me = useStore.getState().player?.username;
+      const left = arr.includes(me||'') ? (me as string) : (arr[0]||'我');
+      const right = arr.find(n=>n!==left) || (arr[0]||'对手');
+      setBattle({ summary: `${left} 对 ${right} 进行切磋`, logs: details, left, right });
+    }
   }
 
   async function loadInventory() {
@@ -260,6 +282,28 @@ export default function ChatPage() {
           <OnlineUsers users={users} players={players||[]} selfId={player?.id} onChallenge={challenge} />
         </div>
       </div>
+      {chooseJobOpen && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
+          <div className="bg-slate-800 border border-slate-700 rounded p-4 w-[90vw] max-w-md">
+            <div className="font-semibold mb-2">选择职业</div>
+            <div className="grid grid-cols-2 gap-3">
+              {[
+                { code:'swordsman', name:'剑客' },
+                { code:'knifeman', name:'刀客' },
+              ].map(opt => (
+                <button key={opt.code} className="p-3 bg-slate-900 rounded border border-slate-700 hover:border-emerald-500" onClick={async()=>{
+                  await fetch('/api/player/job', { method:'POST', headers:{ 'Content-Type':'application/json', Authorization:`Bearer ${token}` }, body: JSON.stringify({ job: opt.code }) });
+                  const d = await fetch('/api/player', { headers:{ Authorization:`Bearer ${token}` } }).then(r=>r.json());
+                  setPlayer(d.player); setChooseJobOpen(false);
+                }}>{opt.name}</button>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+      {battle && (
+        <BattleViewer battle={battle} onClose={()=>setBattle(null)} />
+      )}
       <div>
         <div className="bg-slate-800 border border-slate-700 rounded p-3 h-[70vh] flex flex-col">
           <div ref={listRef} className="flex-1 overflow-y-auto space-y-2 scrollbar">
@@ -584,6 +628,108 @@ function OnlineUsers({ users, players, selfId, onChallenge }: { users: User[]; p
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+function BattleViewer({ battle, onClose }: { battle: {summary:string; logs:string[]; left:string; right:string}; onClose: ()=>void }) {
+  const [leftPos, setLeftPos] = useState<number>(0); // percent shift from base
+  const [rightPos, setRightPos] = useState<number>(0); // percent shift from base (negative to move left)
+  const [leftAction, setLeftAction] = useState<'idle'|'walk'|'attack'|'hurt'|'die'>('idle');
+  const [rightAction, setRightAction] = useState<'idle'|'walk'|'attack'|'hurt'|'die'>('idle');
+  const [leftHP, setLeftHP] = useState<number|undefined>(undefined);
+  const [rightHP, setRightHP] = useState<number|undefined>(undefined);
+  const [leftMax, setLeftMax] = useState<number>(100);
+  const [rightMax, setRightMax] = useState<number>(100);
+  const [leftStatus, setLeftStatus] = useState<string>("");
+  const [rightStatus, setRightStatus] = useState<string>("");
+  const player = useStore.getState().player;
+  const players = useStore.getState().players;
+
+  useEffect(() => {
+    if (player?.username === battle.left) {
+      setLeftHP(player.hp); setLeftMax(player.maxHp || player.hp);
+    }
+    const other = players.find(p=>p.username===battle.right);
+    if (other) {
+      fetch(`/api/player/${other.id}`).then(r=>r.json()).then(d=>{ setRightHP(d.player.hp); setRightMax(d.player.maxHp||d.player.hp); });
+    }
+    // run replay
+    let i = 0;
+    const run = async () => {
+      const sleep = (ms:number)=>new Promise(r=>setTimeout(r,ms));
+      for (const line of battle.logs) {
+        // parse
+        const dodgeM = /^(.+?) 躲闪成功/.exec(line);
+        const hitM = /^(.+?)( 暴击)? 对 (.+?) 造成 (\d+) 伤害，剩余HP (\d+)/.exec(line);
+        if (hitM) {
+          const attacker = hitM[1];
+          const crit = !!hitM[2];
+          const victim = hitM[3];
+          const dmg = parseInt(hitM[4],10);
+          const rem = parseInt(hitM[5],10);
+          const leftAtk = attacker===battle.left;
+          // walk to target
+          if (leftAtk) { setLeftAction('walk'); setLeftPos(35); } else { setRightAction('walk'); setRightPos(-35); }
+          await sleep(300);
+          // attack
+          if (leftAtk) setLeftAction('attack'); else setRightAction('attack');
+          // victim hurt
+          await sleep(200);
+          if (leftAtk) { setRightAction('hurt'); setRightHP(rem); setLeftStatus(`造成 ${dmg}${crit?' (暴击)':''} 伤害`); setRightStatus(rem<=0? '阵亡' : `受到 ${dmg} 伤害`); if (rem<=0) setRightAction('die'); }
+          else { setLeftAction('hurt'); setLeftHP(rem); setRightStatus(`造成 ${dmg}${crit?' (暴击)':''} 伤害`); setLeftStatus(rem<=0? '阵亡' : `受到 ${dmg} 伤害`); if (rem<=0) setLeftAction('die'); }
+          await sleep(300);
+          // move back
+          if (leftAtk) { setLeftAction('walk'); setLeftPos(0); } else { setRightAction('walk'); setRightPos(0); }
+          await sleep(300);
+          setLeftAction('idle'); setRightAction('idle');
+        } else if (dodgeM) {
+          const dodger = dodgeM[1];
+          const leftAtk = dodger===battle.right; // if right dodged, left was attacker
+          if (leftAtk) { setLeftAction('walk'); setLeftPos(35); await new Promise(r=>setTimeout(r,300)); setLeftAction('attack'); setRightStatus('闪避'); await new Promise(r=>setTimeout(r,200)); setRightAction('idle'); } else { setRightAction('walk'); setRightPos(-35); await new Promise(r=>setTimeout(r,300)); setRightAction('attack'); setLeftStatus('闪避'); await new Promise(r=>setTimeout(r,200)); setLeftAction('idle'); }
+          // move back
+          await new Promise(r=>setTimeout(r,200));
+          if (leftAtk) { setLeftPos(0); setLeftAction('idle'); } else { setRightPos(0); setRightAction('idle'); }
+        }
+        i++;
+      }
+    };
+    run();
+  }, []);
+
+  // assets mapping (placeholder same image for all actions; replace with actual webp assets when available)
+  const DEFAULT = 'https://word-war.tos-cn-beijing.volces.com/fc13.png';
+  function sprite(job?:string|null, action?:string) {
+    // TODO: switch by job+action when you have assets; use same for now
+    return DEFAULT;
+  }
+  const leftPct = Math.max(0, Math.min(100, Math.round(((leftHP ?? leftMax) / (leftMax||1)) * 100)));
+  const rightPct = Math.max(0, Math.min(100, Math.round(((rightHP ?? rightMax) / (rightMax||1)) * 100)));
+
+  return (
+    <div className="fixed inset-0 bg-black/70 z-50 flex items-center justify-center">
+      <div className="bg-slate-900 border border-slate-700 rounded w-[90vw] max-w-3xl p-4">
+        <div className="flex items-center justify-between mb-3">
+          <div className="font-semibold">切磋 · {battle.left} vs {battle.right}</div>
+          <button onClick={onClose} className="text-slate-300 hover:text-white">关闭</button>
+        </div>
+        <div className="flex items-center justify-between mb-2">
+          <div className="flex-1 mr-2">
+            <div className="text-xs text-slate-400 mb-1">{battle.left} HP {leftHP ?? leftMax}/{leftMax}</div>
+            <div className="h-2 bg-slate-800 rounded"><div className="h-full bg-emerald-600 rounded" style={{ width: `${leftPct}%` }} /></div>
+          </div>
+          <div className="flex-1 ml-2 text-right">
+            <div className="text-xs text-slate-400 mb-1">{battle.right} HP {rightHP ?? rightMax}/{rightMax}</div>
+            <div className="h-2 bg-slate-800 rounded"><div className="h-full bg-rose-600 rounded" style={{ width: `${rightPct}%` }} /></div>
+          </div>
+        </div>
+        <div className="relative h-64 bg-slate-800 border border-slate-700 rounded overflow-hidden">
+          <img src={sprite(player?.job, leftAction)} className="absolute bottom-10 transition-all duration-300" style={{ left: `calc(15% + ${leftPos}%)` }} />
+          <img src={sprite('opponent', rightAction)} className="absolute bottom-10 transition-all duration-300" style={{ left: `calc(85% + ${rightPos}%)`, transform: 'scaleX(-1)' }} />
+          <div className="absolute left-4 bottom-2 text-xs text-slate-200">{leftStatus}</div>
+          <div className="absolute right-4 bottom-2 text-xs text-slate-200 text-right">{rightStatus}</div>
+        </div>
+      </div>
     </div>
   );
 }

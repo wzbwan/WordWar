@@ -150,6 +150,10 @@ function init() {
     if (!hasDead) {
       db.exec("ALTER TABLE characters ADD COLUMN dead_remaining_ms INTEGER NOT NULL DEFAULT 0");
     }
+    const hasJob = cols.some(c => c.name === 'job');
+    if (!hasJob) {
+      db.exec("ALTER TABLE characters ADD COLUMN job TEXT");
+    }
 
     // item_templates add url
     const itCols = db.prepare("PRAGMA table_info(item_templates)").all();
@@ -173,6 +177,23 @@ function init() {
 
   // Seed defaults
   try {
+    // jobs table
+    db.exec(`CREATE TABLE IF NOT EXISTS jobs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      code TEXT UNIQUE NOT NULL,
+      name TEXT NOT NULL,
+      idle_url TEXT,
+      hurt_url TEXT,
+      attack_url TEXT,
+      walk_url TEXT,
+      die_url TEXT
+    );`);
+    const jc = db.prepare('SELECT COUNT(*) as c FROM jobs').get().c;
+    if (jc === 0) {
+      const D='https://word-war.tos-cn-beijing.volces.com/fc13.png';
+      db.prepare('INSERT INTO jobs (code,name,idle_url,hurt_url,attack_url,walk_url,die_url) VALUES (?,?,?,?,?,?,?)').run('swordsman','剑客',D,D,D,D,D);
+      db.prepare('INSERT INTO jobs (code,name,idle_url,hurt_url,attack_url,walk_url,die_url) VALUES (?,?,?,?,?,?,?)').run('knifeman','刀客',D,D,D,D,D);
+    }
     const mtCount = db.prepare('SELECT COUNT(*) as c FROM monster_templates').get().c;
     if (mtCount === 0) {
       try { db.exec("ALTER TABLE monster_templates ADD COLUMN last_hit_reward_items TEXT"); } catch {}
