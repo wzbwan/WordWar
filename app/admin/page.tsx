@@ -66,14 +66,15 @@ export default function AdminPage() {
       <section className="space-y-2">
         <div className="font-semibold">怪物模板</div>
         <table className="w-full text-sm">
-          <thead className="text-slate-400"><tr><th className="text-left">ID</th><th className="text-left">名称</th><th>HP</th><th>ATK</th><th>DEF</th><th>经验池</th><th>金币池</th><th>反击</th><th>随机物品列表</th><th>操作</th></tr></thead>
+          <thead className="text-slate-400"><tr><th className="text-left">ID</th><th className="text-left">名称</th><th>图</th><th>HP</th><th>ATK</th><th>DEF</th><th>经验池</th><th>金币池</th><th>反击</th><th>随机物品列表</th><th>操作</th></tr></thead>
           <tbody>
             {monsters.map((m:any)=> (
               <tr key={m.id} className="border-b border-slate-700">
-                <td>{m.id}</td><td>{m.name}</td><td>{m.hp}</td><td>{m.atk}</td><td>{m.def}</td><td>{m.exp_pool}</td><td>{m.money_pool}</td><td>{m.counter_chance}</td><td className="truncate max-w-[180px]">{m.last_hit_reward_items||''}</td>
+                <td>{m.id}</td><td>{m.name}</td><td>{m.url ? <img src={m.url} className="w-8 h-8"/>:null}</td><td>{m.hp}</td><td>{m.atk}</td><td>{m.def}</td><td>{m.exp_pool}</td><td>{m.money_pool}</td><td>{m.counter_chance}</td><td className="truncate max-w-[180px]">{m.last_hit_reward_items||''}</td>
                 <td className="space-x-2">
                   <button className="px-2 py-0.5 bg-slate-700 rounded" onClick={()=>{
                     (document.querySelector('input[name=name]') as HTMLInputElement).value=m.name;
+                    (document.querySelector('input[name=url]') as HTMLInputElement).value=m.url||'';
                     (document.querySelector('input[name=hp]') as HTMLInputElement).value=String(m.hp);
                     (document.querySelector('input[name=atk]') as HTMLInputElement).value=String(m.atk);
                     (document.querySelector('input[name=def]') as HTMLInputElement).value=String(m.def);
@@ -93,6 +94,7 @@ export default function AdminPage() {
         <form onSubmit={saveMonster} className="grid grid-cols-7 gap-2">
           <input name="id" placeholder="编辑ID（可选）" className="px-2 py-1 bg-slate-900 border border-slate-700 rounded" />
           <input name="name" placeholder="名称" className="px-2 py-1 bg-slate-900 border border-slate-700 rounded col-span-2" />
+          <input name="url" placeholder="图片URL(可选)" className="px-2 py-1 bg-slate-900 border border-slate-700 rounded col-span-2" />
           <input name="hp" placeholder="HP" className="px-2 py-1 bg-slate-900 border border-slate-700 rounded" />
           <input name="atk" placeholder="ATK" className="px-2 py-1 bg-slate-900 border border-slate-700 rounded" />
           <input name="def" placeholder="DEF" className="px-2 py-1 bg-slate-900 border border-slate-700 rounded" />

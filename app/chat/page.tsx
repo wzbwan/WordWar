@@ -4,26 +4,30 @@ import { create } from "zustand";
 
 type Msg = { id: string; type: "chat" | "system" | "battle"; user?: string; content: string; ts: number; details?: string[] };
 type User = { id: number; username: string; level?: number };
-type Player = { id?: number; username?: string; level: number; exp: number; money: number; atk: number; def: number; hp: number; maxHp?: number; dodge_index?: number; crit_index?: number; deadRemaining?: number };
+type Player = { id?: number; username?: string; level: number; exp: number; money: number; atk: number; def: number; hp: number; maxHp?: number; dodge_index?: number; crit_index?: number; deadRemaining?: number; bank?: number };
 
 type Store = {
   messages: Msg[];
-  users: User[];
+  users: User[]; // online users only (WS)
+  players: User[]; // all players from API
   player?: Player;
   coinrain?: { event_id: string | number; endAt: number };
-  monster?: { hp: number; max_hp: number; cell: number; endsAt: number };
+  monster?: { hp: number; max_hp: number; cell: number; endsAt: number; url?: string|null };
   pushMsg: (m: Msg) => void;
   setUsers: (u: User[]) => void;
+  setPlayers: (u: User[]) => void;
   setPlayer: (p: Player) => void;
   setCoinrain: (c?: { event_id: string; endAt: number }) => void;
-  setMonster: (m?: { hp: number; max_hp: number; cell: number; endsAt: number }) => void;
+  setMonster: (m?: { hp: number; max_hp: number; cell: number; endsAt: number; url?: string|null }) => void;
 };
 
 const useStore = create<Store>((set) => ({
   messages: [],
   users: [],
+  players: [],
   pushMsg: (m) => set((s) => ({ messages: [...s.messages, m].slice(-500) })),
   setUsers: (u) => set({ users: u }),
+  setPlayers: (u) => set({ players: u }),
   setPlayer: (p) => set({ player: p }),
   setCoinrain: (c) => set({ coinrain: c }),
   setMonster: (m) => set({ monster: m }),
@@ -61,7 +65,7 @@ export default function ChatPage() {
   const token = useToken();
   const [input, setInput] = useState("");
   const wsRef = useRef<WebSocket | null>(null);
-  const { messages, users, player, pushMsg, setUsers, setPlayer, coinrain, setCoinrain, monster, setMonster } = useStore();
+  const { messages, users, players, player, pushMsg, setUsers, setPlayers, setPlayer, coinrain, setCoinrain, monster, setMonster } = useStore();
   const [pvpDetails, setPvpDetails] = useState<string[] | null>(null);
   const [nextHitAt, setNextHitAt] = useState<number>(0);
   const listRef = useRef<HTMLDivElement | null>(null);
@@ -78,6 +82,11 @@ export default function ChatPage() {
       .then((r) => r.json())
       .then((d) => setPlayer(d.player))
       .catch(() => {});
+    // fetch all players list
+    fetch('/api/players')
+      .then(r=>r.json())
+      .then(d=> setPlayers(d.players||[]))
+      .catch(()=>{});
 
     const url =(location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host.replace(/:\d+$/, ':3001');
     console.log('chat page websocket url:',url)
@@ -111,7 +120,7 @@ export default function ChatPage() {
         pushMsg({ id: uid(), type: "system", content: msg.payload.text, ts: Date.now() });
       }
       if (msg.type === "monster.state") {
-        setMonster({ hp: msg.payload.hp, max_hp: msg.payload.max_hp, cell: msg.payload.cell, endsAt: msg.payload.endsAt });
+        setMonster({ hp: msg.payload.hp, max_hp: msg.payload.max_hp, cell: msg.payload.cell, endsAt: msg.payload.endsAt, url: msg.payload.url });
       }
       if (msg.type === "monster.end") {
         setMonster(undefined);
@@ -121,8 +130,16 @@ export default function ChatPage() {
     const ping = setInterval(() => {
       ws.readyState === 1 && ws.send(JSON.stringify({ type: "ping" }));
     }, 30000);
+    const refresh = setInterval(() => {
+      if (!token) return;
+      fetch("/api/player", { headers: { Authorization: `Bearer ${token}` } })
+        .then((r) => r.json())
+        .then((d) => setPlayer(d.player))
+        .catch(() => {});
+    }, 60000);
     return () => {
       clearInterval(ping);
+      clearInterval(refresh);
       ws.close();
     };
   }, [token]);
@@ -239,8 +256,8 @@ export default function ChatPage() {
     <div className="grid gap-4" style={{ gridTemplateColumns: '200px 1fr 280px' }}>
       <div>
         <div className="bg-slate-800 border border-slate-700 rounded p-3">
-          <div className="font-semibold mb-2">在线玩家</div>
-          <OnlineUsers users={users} selfId={player?.id} onChallenge={challenge} />
+          <div className="font-semibold mb-2">玩家列表</div>
+          <OnlineUsers users={users} players={players||[]} selfId={player?.id} onChallenge={challenge} />
         </div>
       </div>
       <div>
@@ -300,7 +317,7 @@ export default function ChatPage() {
             <div className="text-sm text-slate-400">加载中...</div>
           )}
           <div className="mt-3 flex gap-2">
-            <button disabled={!!(player?.deadRemaining && player.deadRemaining>0)} onClick={storeExp} className="flex-1 py-2 bg-emerald-600 hover:bg-emerald-500 rounded disabled:opacity-50">存点</button>
+            <button disabled={!!(player?.deadRemaining && player.deadRemaining>0) || !((player?.bank||0) > 0)} onClick={storeExp} className="flex-1 py-2 bg-emerald-600 hover:bg-emerald-500 rounded disabled:opacity-50">存点</button>
             <button onClick={async()=>{ setInvOpen(true); await loadInventory(); }} className="px-3 py-2 bg-slate-700 hover:bg-slate-600 rounded">物品栏</button>
           </div>
         </div>
@@ -322,7 +339,11 @@ export default function ChatPage() {
                    <div key={i} className="aspect-square bg-slate-900 rounded flex items-center justify-center cursor-pointer select-none"
                         onClick={() => { if (!(player?.deadRemaining && player.deadRemaining>0)) hitMonster(i); }}>
                      {monster.cell === i && (
-                       <span className="text-2xl">👾</span>
+                       monster.url ? (
+                         <img src={monster.url} alt="monster" className="w-14 h-14 object-contain" />
+                       ) : (
+                         <span className="text-2xl">👾</span>
+                       )
                      )}
                    </div>
                 ))}
@@ -460,25 +481,44 @@ export default function ChatPage() {
   );
 }
 
-function OnlineUsers({ users, selfId, onChallenge }: { users: User[]; selfId?: number; onChallenge: (id: number) => void }) {
+function OnlineUsers({ users, players, selfId, onChallenge }: { users: User[]; players: User[]; selfId?: number; onChallenge: (id: number) => void }) {
   const [details, setDetails] = useState<any | null>(null);
+  const [equip, setEquip] = useState<any[] | null>(null);
   const [open, setOpen] = useState(false);
   async function viewUser(id: number) {
     const res = await fetch(`/api/player/${id}`);
     const data = await res.json();
+    const inv = await fetch(`/api/player/${id}/inventory`).then(r=>r.json()).catch(()=>({equip:[]}));
     if (res.ok) {
-      setDetails(data.player);
+      const eq = inv.equip||[];
+      const addDodge = eq.reduce((s:any,e:any)=> s + (e.add_dodge||0), 0);
+      const addCrit  = eq.reduce((s:any,e:any)=> s + (e.add_crit||0), 0);
+      const d = data.player || {};
+      const eff = { ...d, dodge_index: (d.dodge_index||0) + addDodge, crit_index: (d.crit_index||0) + addCrit };
+      setDetails(eff);
+      setEquip(eq);
       setOpen(true);
     }
   }
+  const onlineIds = new Set(users.map(u=>u.id));
+  const ordered = [...players].sort((a,b)=> {
+    const ao = onlineIds.has(a.id) ? 0 : 1;
+    const bo = onlineIds.has(b.id) ? 0 : 1;
+    if (ao !== bo) return ao - bo;
+    return a.username.localeCompare(b.username);
+  });
   return (
     <div>
       <div className="space-y-1">
-        {users.map((u) => (
+        {ordered.map((u) => (
           <div key={u.id} className="flex items-center justify-between text-sm">
-            <button className="text-left hover:underline" onClick={() => viewUser(u.id)}>{u.username} {u.level ? `(Lv.${u.level})` : ''}</button>
-            {selfId && selfId !== u.id && (
+            <button className={`text-left hover:underline ${onlineIds.has(u.id) ? 'text-emerald-300' : 'text-slate-500'}`} onClick={() => viewUser(u.id)}>
+              {u.username} {u.level ? `(Lv.${u.level})` : ''}
+            </button>
+            {selfId && selfId !== u.id && onlineIds.has(u.id) ? (
               <button onClick={() => onChallenge(u.id)} className="text-xs text-indigo-300 hover:text-white">切磋</button>
+            ) : (
+              <span className="text-xs text-slate-600">{onlineIds.has(u.id)? '' : '离线'}</span>
             )}
           </div>
         ))}
@@ -501,6 +541,43 @@ function OnlineUsers({ users, selfId, onChallenge }: { users: User[]; selfId?: n
                 <div className="flex justify-between text-xs text-slate-400"><span>HP</span><span>{details.hp}/{details.maxHp ?? details.hp}</span></div>
                 <div className="h-2 bg-slate-900 rounded">
                   <div className="h-full bg-emerald-600 rounded" style={{ width: `${Math.max(0, Math.min(100, Math.round(((details.hp) / (details.maxHp ?? details.hp)) * 100)))}%` }} />
+                </div>
+              </div>
+              <div>
+                <div className="font-semibold mt-2 mb-1">装备</div>
+                <div className="grid grid-cols-3 gap-2">
+                  {['weapon','hat','clothes','shoes','necklace','ring'].map((slot) => {
+                    const it = (equip||[]).find((e:any)=>e.slot===slot);
+                    return (
+                      <div key={slot} className="p-2 bg-slate-900 rounded text-xs flex items-center gap-2 relative group">
+                        <div className="w-8 h-8 bg-slate-800 rounded flex items-center justify-center overflow-hidden">
+                          {it ? (
+                            <img src={it.url || 'https://word-war.tos-cn-beijing.volces.com/fc13.png'} alt={it.name} className="w-8 h-8 object-contain" />
+                          ) : (
+                            <span className="text-slate-600">空</span>
+                          )}
+                        </div>
+                        <div className="truncate">{slot}</div>
+                        {it && (
+                          <div className="hidden group-hover:block absolute left-full top-0 ml-2 z-50 w-56 p-2 rounded bg-slate-800 border border-slate-700 shadow-lg">
+                            <div className="text-slate-100 font-semibold mb-1">{it.name}（{it.category}）</div>
+                            <div className="text-slate-300 space-y-0.5">
+                              {(() => {
+                                const rows: string[] = [];
+                                if (it.add_atk) rows.push(`增加攻击 +${it.add_atk}`);
+                                if (it.add_def) rows.push(`增加防御 +${it.add_def}`);
+                                if (it.add_max_hp) rows.push(`增加最大血量 +${it.add_max_hp}`);
+                                if (it.add_dodge) rows.push(`增加闪避指数 +${it.add_dodge}`);
+                                if (it.add_attack_speed) rows.push(`增加攻速 +${it.add_attack_speed}`);
+                                if (it.add_crit) rows.push(`增加暴击指数 +${it.add_crit}`);
+                                return rows.map((r, idx) => (<div key={idx}>{r}</div>));
+                              })()}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
             </div>

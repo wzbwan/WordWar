@@ -157,7 +157,7 @@ function spawnCoinRainByTemplate(tplId) {
 }
 
 // Monster state
-let activeMonster = null; // { id:number, name:string, hp, max_hp, atk, def, money_pool, exp_pool, counter_chance, started_at, damage: Map<uid, dmg>, cell:number, endsAt:number, lastHitter:number|null, reward_item_id?:number }
+let activeMonster = null; // { id:number, name:string, url?:string, hp, max_hp, atk, def, money_pool, exp_pool, counter_chance, started_at, damage: Map<uid, dmg>, cell:number, endsAt:number, lastHitter:number|null, reward_item_id?:number }
 const MONSTER_DURATION_MS = 60_000;
 
 function spawnMonsterByTemplate(tplId) {
@@ -166,13 +166,13 @@ function spawnMonsterByTemplate(tplId) {
   if (!tpl) return;
   const now = Date.now();
   const rewardItems = (tpl.last_hit_reward_items && String(tpl.last_hit_reward_items).trim()) ? String(tpl.last_hit_reward_items).split(',').map(s=>Number(s.trim())).filter(n=>Number.isFinite(n) && n>0) : null;
-  const base = { name: tpl.name, hp: tpl.hp, max_hp: tpl.hp, atk: tpl.atk, def: tpl.def, money_pool: tpl.money_pool, exp_pool: tpl.exp_pool, counter_chance: tpl.counter_chance, reward_item_id: tpl.last_hit_reward_item_id, reward_items: rewardItems };
+  const base = { name: tpl.name, url: tpl.url || null, hp: tpl.hp, max_hp: tpl.hp, atk: tpl.atk, def: tpl.def, money_pool: tpl.money_pool, exp_pool: tpl.exp_pool, counter_chance: tpl.counter_chance, reward_item_id: tpl.last_hit_reward_item_id, reward_items: rewardItems };
   const res = db.prepare('INSERT INTO monsters (hp, max_hp, atk, def, reward_pool, started_at) VALUES (?,?,?,?,?,?)')
     .run(base.hp, base.max_hp, base.atk, base.def, base.money_pool, now);
   const id = Number(res.lastInsertRowid);
   activeMonster = { id, ...base, started_at: now, damage: new Map(), cell: Math.floor(Math.random()*9), endsAt: now + MONSTER_DURATION_MS, lastHitter: null };
   broadcast('monster.spawn', { text: `怪物出现：${tpl.name}！HP ${activeMonster.hp}/${activeMonster.max_hp} 金币池 ${activeMonster.money_pool}` });
-  broadcast('monster.state', { hp: activeMonster.hp, max_hp: activeMonster.max_hp, cell: activeMonster.cell, endsAt: activeMonster.endsAt });
+  broadcast('monster.state', { hp: activeMonster.hp, max_hp: activeMonster.max_hp, cell: activeMonster.cell, endsAt: activeMonster.endsAt, url: activeMonster.url });
 }
 
 function endMonster(killed) {
@@ -273,7 +273,7 @@ function tickMonster() {
   if (!activeMonster._nextMoveAt || now >= activeMonster._nextMoveAt) {
     activeMonster.cell = Math.floor(Math.random()*9);
     activeMonster._nextMoveAt = now + 900 + Math.floor(Math.random()*600);
-    broadcast('monster.state', { hp: activeMonster.hp, max_hp: activeMonster.max_hp, cell: activeMonster.cell, endsAt: activeMonster.endsAt });
+    broadcast('monster.state', { hp: activeMonster.hp, max_hp: activeMonster.max_hp, cell: activeMonster.cell, endsAt: activeMonster.endsAt, url: activeMonster.url });
   }
 }
 
@@ -523,7 +523,9 @@ wss.on('connection', (ws) => {
       const name = online.get(uid)?.username;
       online.delete(uid);
       // Anchor last_exp_time at disconnect to avoid offline accumulation
-      try { db.prepare('UPDATE characters SET last_exp_time = ? WHERE user_id = ?').run(Date.now(), uid); } catch {}
+      try { 
+        db.prepare('UPDATE characters SET last_exp_time = ?, exp_bank = 0 WHERE user_id = ?').run(Date.now(), uid);
+      } catch {}
       broadcast('user.list', userList());
       pushSystem(`玩家 ${name} 离开了聊天室`);
     }

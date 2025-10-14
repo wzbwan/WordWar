@@ -157,6 +157,16 @@ function init() {
     if (!hasUrl) {
       db.exec("ALTER TABLE item_templates ADD COLUMN url TEXT NOT NULL DEFAULT 'https://word-war.tos-cn-beijing.volces.com/fc13.png'");
     }
+    // monster_templates add url and last_hit_reward_items if missing
+    const mtCols = db.prepare("PRAGMA table_info(monster_templates)").all();
+    const hasMtItems = mtCols.some(c => c.name === 'last_hit_reward_items');
+    if (!hasMtItems) {
+      try { db.exec("ALTER TABLE monster_templates ADD COLUMN last_hit_reward_items TEXT"); } catch {}
+    }
+    const hasMtUrl = mtCols.some(c => c.name === 'url');
+    if (!hasMtUrl) {
+      try { db.exec("ALTER TABLE monster_templates ADD COLUMN url TEXT"); } catch {}
+    }
   } catch (e) {
     // ignore
   }
@@ -165,11 +175,10 @@ function init() {
   try {
     const mtCount = db.prepare('SELECT COUNT(*) as c FROM monster_templates').get().c;
     if (mtCount === 0) {
-      db.exec("ALTER TABLE monster_templates ADD COLUMN last_hit_reward_items TEXT");
-      db.prepare('INSERT INTO monster_templates (name, hp, atk, def, exp_pool, money_pool, counter_chance, last_hit_reward_items) VALUES (?,?,?,?,?,?,?,?)')
-        .run('普通怪', 6000, 6, 24, 0, 30000, 0.25, null);
-    } else {
       try { db.exec("ALTER TABLE monster_templates ADD COLUMN last_hit_reward_items TEXT"); } catch {}
+      try { db.exec("ALTER TABLE monster_templates ADD COLUMN url TEXT"); } catch {}
+      db.prepare('INSERT INTO monster_templates (name, hp, atk, def, exp_pool, money_pool, counter_chance, last_hit_reward_items, url) VALUES (?,?,?,?,?,?,?,?,?)')
+        .run('普通怪', 6000, 6, 24, 0, 30000, 0.25, null, null);
     }
     const ctCount = db.prepare('SELECT COUNT(*) as c FROM coinrain_templates').get().c;
     if (ctCount === 0) {

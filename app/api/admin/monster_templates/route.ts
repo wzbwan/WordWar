@@ -21,12 +21,12 @@ export async function POST(req: NextRequest) {
   const body = await req.json();
   const db = getDB();
   if (body.id) {
-    db.prepare('UPDATE monster_templates SET name=?, hp=?, atk=?, def=?, exp_pool=?, money_pool=?, counter_chance=?, last_hit_reward_item_id=?, last_hit_reward_items=? WHERE id=?')
-      .run(body.name, body.hp, body.atk, body.def, body.exp_pool, body.money_pool, body.counter_chance ?? 0.25, body.last_hit_reward_item_id ?? null, body.last_hit_reward_items ?? null, body.id);
+    db.prepare('UPDATE monster_templates SET name=?, hp=?, atk=?, def=?, exp_pool=?, money_pool=?, counter_chance=?, last_hit_reward_item_id=?, last_hit_reward_items=?, url=? WHERE id=?')
+      .run(body.name, body.hp, body.atk, body.def, body.exp_pool, body.money_pool, body.counter_chance ?? 0.25, body.last_hit_reward_item_id ?? null, body.last_hit_reward_items ?? null, body.url ?? null, body.id);
     return Response.json({ ok: true, id: body.id });
   } else {
-    const res = db.prepare('INSERT INTO monster_templates (name, hp, atk, def, exp_pool, money_pool, counter_chance, last_hit_reward_item_id, last_hit_reward_items) VALUES (?,?,?,?,?,?,?,?,?)')
-      .run(body.name, body.hp, body.atk, body.def, body.exp_pool, body.money_pool, body.counter_chance ?? 0.25, body.last_hit_reward_item_id ?? null, body.last_hit_reward_items ?? null);
+    const res = db.prepare('INSERT INTO monster_templates (name, hp, atk, def, exp_pool, money_pool, counter_chance, last_hit_reward_item_id, last_hit_reward_items, url) VALUES (?,?,?,?,?,?,?,?,?,?)')
+      .run(body.name, body.hp, body.atk, body.def, body.exp_pool, body.money_pool, body.counter_chance ?? 0.25, body.last_hit_reward_item_id ?? null, body.last_hit_reward_items ?? null, body.url ?? null);
     return Response.json({ ok: true, id: Number(res.lastInsertRowid) });
   }
 }
