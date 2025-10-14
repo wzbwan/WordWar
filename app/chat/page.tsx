@@ -74,6 +74,7 @@ export default function ChatPage() {
   const [equip, setEquip] = useState<any[]>([]);
   const [chooseJobOpen, setChooseJobOpen] = useState(false);
   const [battle, setBattle] = useState<{summary: string; logs: string[]; left:string; right:string} | null>(null);
+  const [jobs, setJobs] = useState<Record<string, any>>({});
 
   useEffect(() => {
     if (!token) {
@@ -89,6 +90,14 @@ export default function ChatPage() {
       .then(r=>r.json())
       .then(d=> setPlayers(d.players||[]))
       .catch(()=>{});
+    // fetch jobs
+    fetch('/api/jobs')
+      .then(r=>r.json())
+      .then(d=>{
+        const map: Record<string, any> = {};
+        (d.jobs||[]).forEach((j:any)=>{ map[j.code]=j; });
+        setJobs(map);
+      }).catch(()=>{});
 
     const url =(location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host.replace(/:\d+$/, ':3001');
     console.log('chat page websocket url:',url)
@@ -302,7 +311,7 @@ export default function ChatPage() {
         </div>
       )}
       {battle && (
-        <BattleViewer battle={battle} onClose={()=>setBattle(null)} />
+        <BattleViewer battle={battle} jobs={jobs} onClose={()=>setBattle(null)} />
       )}
       <div>
         <div className="bg-slate-800 border border-slate-700 rounded p-3 h-[70vh] flex flex-col">
@@ -632,7 +641,7 @@ function OnlineUsers({ users, players, selfId, onChallenge }: { users: User[]; p
   );
 }
 
-function BattleViewer({ battle, onClose }: { battle: {summary:string; logs:string[]; left:string; right:string}; onClose: ()=>void }) {
+function BattleViewer({ battle, jobs, onClose }: { battle: {summary:string; logs:string[]; left:string; right:string}; jobs: Record<string, any>; onClose: ()=>void }) {
   const [leftPos, setLeftPos] = useState<number>(0); // percent shift from base
   const [rightPos, setRightPos] = useState<number>(0); // percent shift from base (negative to move left)
   const [leftAction, setLeftAction] = useState<'idle'|'walk'|'attack'|'hurt'|'die'>('idle');
@@ -645,6 +654,7 @@ function BattleViewer({ battle, onClose }: { battle: {summary:string; logs:strin
   const [rightStatus, setRightStatus] = useState<string>("");
   const player = useStore.getState().player;
   const players = useStore.getState().players;
+  const [rightJob, setRightJob] = useState<string| null>(null);
 
   useEffect(() => {
     if (player?.username === battle.left) {
@@ -652,7 +662,7 @@ function BattleViewer({ battle, onClose }: { battle: {summary:string; logs:strin
     }
     const other = players.find(p=>p.username===battle.right);
     if (other) {
-      fetch(`/api/player/${other.id}`).then(r=>r.json()).then(d=>{ setRightHP(d.player.hp); setRightMax(d.player.maxHp||d.player.hp); });
+      fetch(`/api/player/${other.id}`).then(r=>r.json()).then(d=>{ setRightHP(d.player.hp); setRightMax(d.player.maxHp||d.player.hp); setRightJob(d.player.job||null); });
     }
     // run replay
     let i = 0;
@@ -699,9 +709,16 @@ function BattleViewer({ battle, onClose }: { battle: {summary:string; logs:strin
 
   // assets mapping (placeholder same image for all actions; replace with actual webp assets when available)
   const DEFAULT = 'https://word-war.tos-cn-beijing.volces.com/fc13.png';
-  function sprite(job?:string|null, action?:string) {
-    // TODO: switch by job+action when you have assets; use same for now
-    return DEFAULT;
+  function sprite(jobCode?:string|null, action?:string) {
+    const j = jobCode ? jobs[jobCode] : null;
+    if (!j) return DEFAULT;
+    const a = (action||'idle').toLowerCase();
+    if (a==='idle' && j.idle_url) return j.idle_url;
+    if (a==='hurt' && j.hurt_url) return j.hurt_url;
+    if (a==='attack' && j.attack_url) return j.attack_url;
+    if (a==='walk' && j.walk_url) return j.walk_url;
+    if (a==='die' && j.die_url) return j.die_url;
+    return j.idle_url || DEFAULT;
   }
   const leftPct = Math.max(0, Math.min(100, Math.round(((leftHP ?? leftMax) / (leftMax||1)) * 100)));
   const rightPct = Math.max(0, Math.min(100, Math.round(((rightHP ?? rightMax) / (rightMax||1)) * 100)));
@@ -725,7 +742,7 @@ function BattleViewer({ battle, onClose }: { battle: {summary:string; logs:strin
         </div>
         <div className="relative h-64 bg-slate-800 border border-slate-700 rounded overflow-hidden">
           <img src={sprite(player?.job, leftAction)} className="absolute bottom-10 transition-all duration-300" style={{ left: `calc(15% + ${leftPos}%)` }} />
-          <img src={sprite('opponent', rightAction)} className="absolute bottom-10 transition-all duration-300" style={{ left: `calc(85% + ${rightPos}%)`, transform: 'scaleX(-1)' }} />
+          <img src={sprite(rightJob||'opponent', rightAction)} className="absolute bottom-10 transition-all duration-300" style={{ left: `calc(85% + ${rightPos}%)`, transform: 'scaleX(-1)' }} />
           <div className="absolute left-4 bottom-2 text-xs text-slate-200">{leftStatus}</div>
           <div className="absolute right-4 bottom-2 text-xs text-slate-200 text-right">{rightStatus}</div>
         </div>
