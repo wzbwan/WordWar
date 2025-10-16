@@ -59,6 +59,15 @@ export async function POST(req: NextRequest) {
   if (leveled) {
     const text = `玩家${payload.username} 升至 ${level} 级！`;
     db.prepare("INSERT INTO messages (user_id, content, type, ts) VALUES (?,?,?,?)").run(payload.uid, text, "system", now);
+    // Broadcast via WS server
+    try {
+      const wsPort = process.env.WS_PORT || '3001';
+      const url = new URL(`http://localhost:${wsPort}/system/levelup`);
+      url.searchParams.set('uid', String(payload.uid));
+      url.searchParams.set('level', String(level));
+      if (process.env.ADMIN_KEY) url.searchParams.set('key', process.env.ADMIN_KEY);
+      await fetch(url.toString());
+    } catch {}
   }
 
   return Response.json({ ok: true, bank, gain, moneyGain });

@@ -620,10 +620,13 @@ function OnlineUsers({ users, players, selfId, onChallenge }: { users: User[]; p
   return (
     <div>
       <div className="space-y-1">
-        {ordered.map((u) => (
+        {ordered.map((u) => {
+          const online = users.find(ou => ou.id === u.id);
+          const level = online?.level ?? u.level;
+          return (
           <div key={u.id} className="flex items-center justify-between text-sm">
             <button className={`text-left hover:underline ${onlineIds.has(u.id) ? 'text-emerald-300' : 'text-slate-500'}`} onClick={() => viewUser(u.id)}>
-              {u.username} {u.level ? `(Lv.${u.level})` : ''}
+              {u.username} {level ? `(Lv.${level})` : ''}
             </button>
             {selfId && selfId !== u.id && onlineIds.has(u.id) ? (
               <button onClick={() => onChallenge(u.id)} className="text-xs text-indigo-300 hover:text-white">切磋</button>
@@ -631,7 +634,7 @@ function OnlineUsers({ users, players, selfId, onChallenge }: { users: User[]; p
               <span className="text-xs text-slate-600">{onlineIds.has(u.id)? '' : '离线'}</span>
             )}
           </div>
-        ))}
+        );})}
       </div>
       {open && details && (
         <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50">

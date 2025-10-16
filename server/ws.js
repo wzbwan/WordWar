@@ -42,6 +42,24 @@ const server = http.createServer((req, res) => {
       db.prepare('UPDATE characters SET money=? WHERE user_id=?').run(value, row.id);
       res.statusCode = 200; return res.end('ok');
     }
+    if (url.pathname === '/system/levelup') {
+      const key = url.searchParams.get('key');
+      if (process.env.ADMIN_KEY && key !== process.env.ADMIN_KEY) {
+        res.statusCode = 403; return res.end('Forbidden');
+      }
+      const uidStr = url.searchParams.get('uid');
+      const levelStr = url.searchParams.get('level');
+      const uid = Number(uidStr||0);
+      const level = Number(levelStr||0);
+      if (!uid || !level) { res.statusCode = 400; return res.end('bad args'); }
+      try {
+        const u = db.prepare('SELECT username FROM users WHERE id=?').get(uid);
+        const name = u?.username || String(uid);
+        // pushSystem(`玩家 ${name} 升至 ${level} 级！`);
+        sendTo(uid, 'system', { id: uuidv4(), type:'system', content: `恭喜你升到了${level}级` , ts: Date.now() });
+        res.statusCode = 200; return res.end('ok');
+      } catch { res.statusCode = 500; return res.end('error'); }
+    }
     res.statusCode = 404; res.end('Not found');
   } catch (e) {
     res.statusCode = 500; res.end('error');
@@ -197,6 +215,7 @@ function endMonster(killed) {
           const c = getCharBase(uid);
           let level = c.level, exp = c.exp, atk=c.atk, def=c.def, hp=c.hp, hp_max=c.hp_max, dodge_index=c.dodge_index||10, crit_index=c.crit_index||10;
           exp += Math.floor((activeMonster.exp_pool||0) * share);
+          const beforeLevel = level;
           while (exp >= (12 + 2*(level-1))) {
             exp -= (12 + 2*(level-1));
             level += 1; atk+=4; def+=2; hp+=18; hp_max+=18;
@@ -210,6 +229,15 @@ function endMonster(killed) {
           db.prepare('UPDATE characters SET level=?, exp=?, atk=?, def=?, hp=?, hp_max=?, dodge_index=?, crit_index=? WHERE user_id=?').run(level, exp, atk, def, hp, hp_max, dodge_index, crit_index, uid);
           const eff = getChar(uid);
           sendTo(uid, 'player.update', { level: eff.level, exp: eff.exp, money: eff.money, atk: eff.atk, def: eff.def, hp: eff.hp, maxHp: eff.hp_max, dodge_index: eff.dodge_index, crit_index: eff.crit_index });
+          if (level > beforeLevel) {
+            try {
+              const u = db.prepare('SELECT username FROM users WHERE id=?').get(uid);
+              if (u?.username) {
+                // pushSystem(`玩家 ${u.username} 升至 ${level} 级！`);
+                sendTo(uid, 'system', { id: uuidv4(), type:'system', content: `恭喜你升到了${level}级` , ts: Date.now() });
+              }
+            } catch {}
+          }
         } catch {}
       }
       try { db.prepare('INSERT OR REPLACE INTO monster_damage (monster_id, user_id, damage) VALUES (?,?,?)').run(activeMonster.id, uid, dmg); } catch {}
