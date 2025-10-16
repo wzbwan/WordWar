@@ -171,6 +171,35 @@ function init() {
     if (!hasMtUrl) {
       try { db.exec("ALTER TABLE monster_templates ADD COLUMN url TEXT"); } catch {}
     }
+    const hasMtQB = mtCols.some(c => c.name === 'question_bank_id');
+    if (!hasMtQB) {
+      try { db.exec("ALTER TABLE monster_templates ADD COLUMN question_bank_id INTEGER"); } catch {}
+    }
+    const hasMtQTime = mtCols.some(c => c.name === 'question_time_ms');
+    if (!hasMtQTime) {
+      try { db.exec("ALTER TABLE monster_templates ADD COLUMN question_time_ms INTEGER NOT NULL DEFAULT 0"); } catch {}
+    }
+
+    // Quiz tables
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS question_banks (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        description TEXT,
+        enabled INTEGER NOT NULL DEFAULT 1
+      );
+      CREATE TABLE IF NOT EXISTS questions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        bank_id INTEGER NOT NULL,
+        type TEXT NOT NULL, -- single | multiple | true_false | fill
+        content TEXT NOT NULL,
+        options TEXT, -- JSON array for single/multiple/true_false; NULL for fill
+        answer TEXT NOT NULL, -- JSON encoded (string|array|boolean as string)
+        explanation TEXT,
+        FOREIGN KEY(bank_id) REFERENCES question_banks(id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_questions_bank ON questions(bank_id);
+    `);
   } catch (e) {
     // ignore
   }
@@ -198,8 +227,10 @@ function init() {
     if (mtCount === 0) {
       try { db.exec("ALTER TABLE monster_templates ADD COLUMN last_hit_reward_items TEXT"); } catch {}
       try { db.exec("ALTER TABLE monster_templates ADD COLUMN url TEXT"); } catch {}
-      db.prepare('INSERT INTO monster_templates (name, hp, atk, def, exp_pool, money_pool, counter_chance, last_hit_reward_items, url) VALUES (?,?,?,?,?,?,?,?,?)')
-        .run('普通怪', 6000, 6, 24, 0, 30000, 0.25, null, null);
+      try { db.exec("ALTER TABLE monster_templates ADD COLUMN question_bank_id INTEGER"); } catch {}
+      try { db.exec("ALTER TABLE monster_templates ADD COLUMN question_time_ms INTEGER NOT NULL DEFAULT 0"); } catch {}
+      db.prepare('INSERT INTO monster_templates (name, hp, atk, def, exp_pool, money_pool, counter_chance, last_hit_reward_items, url, question_bank_id, question_time_ms) VALUES (?,?,?,?,?,?,?,?,?,?,?)')
+        .run('普通怪', 6000, 6, 24, 0, 30000, 0.25, null, null, null, 0);
     }
     const ctCount = db.prepare('SELECT COUNT(*) as c FROM coinrain_templates').get().c;
     if (ctCount === 0) {
@@ -217,6 +248,24 @@ function init() {
       const c1 = db.prepare('SELECT id FROM coinrain_templates LIMIT 1').get().id;
       db.prepare('INSERT INTO scheduled_events (type, template_id, interval_sec, enabled) VALUES (?,?,?,1)').run('monster', m1, 180);
       db.prepare('INSERT INTO scheduled_events (type, template_id, interval_sec, enabled) VALUES (?,?,?,1)').run('coinrain', c1, 300);
+    }
+    // Seed a default question bank and some sample questions if empty
+    const qbCount = db.prepare('SELECT COUNT(*) as c FROM question_banks').get().c;
+    if (qbCount === 0) {
+      const r1 = db.prepare('INSERT INTO question_banks (name, description, enabled) VALUES (?,?,1)').run('默认题库', '示例题库');
+      const bankId = Number(r1.lastInsertRowid);
+      try {
+        db.prepare('INSERT INTO questions (bank_id, type, content, options, answer, explanation) VALUES (?,?,?,?,?,?)')
+          .run(bankId, 'single', '2 + 2 = ?', JSON.stringify(['1','2','3','4']), JSON.stringify('4'), '加法题');
+        db.prepare('INSERT INTO questions (bank_id, type, content, options, answer) VALUES (?,?,?,?,?)')
+          .run(bankId, 'true_false', '地球是圆的。', JSON.stringify(['对','错']), JSON.stringify(true));
+        db.prepare('INSERT INTO questions (bank_id, type, content, options, answer) VALUES (?,?,?,?,?)')
+          .run(bankId, 'multiple', '以下哪些是质数？', JSON.stringify(['2','3','4','6']), JSON.stringify(['2','3']));
+        db.prepare('INSERT INTO questions (bank_id, type, content, options, answer) VALUES (?,?,?,?,?)')
+          .run(bankId, 'fill', '中国的首都是____。', null, JSON.stringify('北京'));
+      } catch {}
+      // Bind default monster template to this question bank if exists
+      try { db.prepare('UPDATE monster_templates SET question_bank_id=? WHERE id=(SELECT id FROM monster_templates LIMIT 1)').run(bankId); } catch {}
     }
   } catch {}
 }

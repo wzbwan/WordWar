@@ -28,6 +28,8 @@ export default function AdminPage() {
   async function saveMonster(e: any) {
     e.preventDefault(); const f = e.target; const fd = new FormData(f); const body:any = {}; fd.forEach((v,k)=>{ body[k]=v; });
     body.hp=Number(body.hp); body.atk=Number(body.atk); body.def=Number(body.def); body.exp_pool=Number(body.exp_pool); body.money_pool=Number(body.money_pool); body.counter_chance=Number(body.counter_chance);
+    body.question_bank_id = body.question_bank_id ? Number(body.question_bank_id) : null;
+    body.question_time_ms = body.question_time_ms ? Number(body.question_time_ms) : 0;
     const headers:any = { 'Content-Type':'application/json' }; if (key) headers['x-admin-key']=key;
     await fetch('/api/admin/monster_templates', { method:'POST', headers, body: JSON.stringify(body) });
     f.reset(); await loadAll();
@@ -61,16 +63,17 @@ export default function AdminPage() {
         <input className="px-2 py-1 bg-slate-900 border border-slate-700 rounded" placeholder="Admin Key" type="password" value={key} onChange={e=>setKey(e.target.value)} />
         <button className="px-3 py-1 bg-slate-700 rounded" onClick={loadAll}>刷新</button>
         <a className="px-3 py-1 bg-slate-700 rounded" href="/chat">返回聊天室</a>
+        <a className="px-3 py-1 bg-slate-700 rounded" href="/admin/quiz">题库管理</a>
       </div>
 
       <section className="space-y-2">
         <div className="font-semibold">怪物模板</div>
         <table className="w-full text-sm">
-          <thead className="text-slate-400"><tr><th className="text-left">ID</th><th className="text-left">名称</th><th>图</th><th>HP</th><th>ATK</th><th>DEF</th><th>经验池</th><th>金币池</th><th>反击</th><th>随机物品列表</th><th>操作</th></tr></thead>
+          <thead className="text-slate-400"><tr><th className="text-left">ID</th><th className="text-left">名称</th><th>图</th><th>HP</th><th>ATK</th><th>DEF</th><th>经验池</th><th>金币池</th><th>反击</th><th>随机物品列表</th><th>题库ID</th><th>出题时长ms</th><th>操作</th></tr></thead>
           <tbody>
             {monsters.map((m:any)=> (
               <tr key={m.id} className="border-b border-slate-700">
-                <td>{m.id}</td><td>{m.name}</td><td>{m.url ? <img src={m.url} className="w-8 h-8"/>:null}</td><td>{m.hp}</td><td>{m.atk}</td><td>{m.def}</td><td>{m.exp_pool}</td><td>{m.money_pool}</td><td>{m.counter_chance}</td><td className="truncate max-w-[180px]">{m.last_hit_reward_items||''}</td>
+                <td>{m.id}</td><td>{m.name}</td><td>{m.url ? <img src={m.url} className="w-8 h-8"/>:null}</td><td>{m.hp}</td><td>{m.atk}</td><td>{m.def}</td><td>{m.exp_pool}</td><td>{m.money_pool}</td><td>{m.counter_chance}</td><td className="truncate max-w-[180px]">{m.last_hit_reward_items||''}</td><td>{m.question_bank_id ?? ''}</td><td>{m.question_time_ms ?? 0}</td>
                 <td className="space-x-2">
                   <button className="px-2 py-0.5 bg-slate-700 rounded" onClick={()=>{
                     (document.querySelector('input[name=name]') as HTMLInputElement).value=m.name;
@@ -83,6 +86,8 @@ export default function AdminPage() {
                     (document.querySelector('input[name=counter_chance]') as HTMLInputElement).value=String(m.counter_chance);
                     (document.querySelector('input[name=last_hit_reward_item_id]') as HTMLInputElement).value=String(m.last_hit_reward_item_id||'');
                     (document.querySelector('input[name=last_hit_reward_items]') as HTMLInputElement).value=String(m.last_hit_reward_items||'');
+                    (document.querySelector('input[name=question_bank_id]') as HTMLInputElement).value=String(m.question_bank_id||'');
+                    (document.querySelector('input[name=question_time_ms]') as HTMLInputElement).value=String(m.question_time_ms||0);
                     (document.querySelector('input[name=id]') as HTMLInputElement).value=String(m.id);
                   }}>编辑</button>
                   <button className="px-2 py-0.5 bg-rose-700 rounded" onClick={async()=>{ const headers:any={}; if (key) headers['x-admin-key']=key; await fetch(`/api/admin/monster_templates?id=${m.id}`, { method:'DELETE', headers }); await loadAll(); }}>删除</button>
@@ -101,6 +106,8 @@ export default function AdminPage() {
           <input name="exp_pool" placeholder="经验池" className="px-2 py-1 bg-slate-900 border border-slate-700 rounded" />
           <input name="money_pool" placeholder="金币池" className="px-2 py-1 bg-slate-900 border border-slate-700 rounded" />
           <input name="counter_chance" placeholder="反击概率0-1" className="px-2 py-1 bg-slate-900 border border-slate-700 rounded col-span-2" />
+          <input name="question_bank_id" placeholder="题库ID(可选)" className="px-2 py-1 bg-slate-900 border border-slate-700 rounded" />
+          <input name="question_time_ms" placeholder="出题时长ms(可选)" className="px-2 py-1 bg-slate-900 border border-slate-700 rounded" />
           <input name="last_hit_reward_item_id" placeholder="最后一击物品ID(可选)" className="px-2 py-1 bg-slate-900 border border-slate-700 rounded col-span-2" />
           <input name="last_hit_reward_items" placeholder="随机物品列表CSV(例如:1,2,4,4)" className="px-2 py-1 bg-slate-900 border border-slate-700 rounded col-span-3" />
           <button className="px-3 py-1 bg-emerald-600 rounded col-span-1">保存</button>

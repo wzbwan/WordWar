@@ -21,12 +21,12 @@ export async function POST(req: NextRequest) {
   const body = await req.json();
   const db = getDB();
   if (body.id) {
-    db.prepare('UPDATE monster_templates SET name=?, hp=?, atk=?, def=?, exp_pool=?, money_pool=?, counter_chance=?, last_hit_reward_item_id=?, last_hit_reward_items=?, url=? WHERE id=?')
-      .run(body.name, body.hp, body.atk, body.def, body.exp_pool, body.money_pool, body.counter_chance ?? 0.25, body.last_hit_reward_item_id ?? null, body.last_hit_reward_items ?? null, body.url ?? null, body.id);
+    db.prepare('UPDATE monster_templates SET name=?, hp=?, atk=?, def=?, exp_pool=?, money_pool=?, counter_chance=?, last_hit_reward_item_id=?, last_hit_reward_items=?, url=?, question_bank_id=?, question_time_ms=? WHERE id=?')
+      .run(body.name, body.hp, body.atk, body.def, body.exp_pool, body.money_pool, body.counter_chance ?? 0.25, body.last_hit_reward_item_id ?? null, body.last_hit_reward_items ?? null, body.url ?? null, (body.question_bank_id? Number(body.question_bank_id): null), Number(body.question_time_ms||0), body.id);
     return Response.json({ ok: true, id: body.id });
   } else {
-    const res = db.prepare('INSERT INTO monster_templates (name, hp, atk, def, exp_pool, money_pool, counter_chance, last_hit_reward_item_id, last_hit_reward_items, url) VALUES (?,?,?,?,?,?,?,?,?,?)')
-      .run(body.name, body.hp, body.atk, body.def, body.exp_pool, body.money_pool, body.counter_chance ?? 0.25, body.last_hit_reward_item_id ?? null, body.last_hit_reward_items ?? null, body.url ?? null);
+    const res = db.prepare('INSERT INTO monster_templates (name, hp, atk, def, exp_pool, money_pool, counter_chance, last_hit_reward_item_id, last_hit_reward_items, url, question_bank_id, question_time_ms) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)')
+      .run(body.name, body.hp, body.atk, body.def, body.exp_pool, body.money_pool, body.counter_chance ?? 0.25, body.last_hit_reward_item_id ?? null, body.last_hit_reward_items ?? null, body.url ?? null, (body.question_bank_id? Number(body.question_bank_id): null), Number(body.question_time_ms||0));
     return Response.json({ ok: true, id: Number(res.lastInsertRowid) });
   }
 }

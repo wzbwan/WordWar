@@ -157,7 +157,7 @@ function spawnCoinRainByTemplate(tplId) {
 }
 
 // Monster state
-let activeMonster = null; // { id:number, name:string, url?:string, hp, max_hp, atk, def, money_pool, exp_pool, counter_chance, started_at, damage: Map<uid, dmg>, cell:number, endsAt:number, lastHitter:number|null, reward_item_id?:number }
+let activeMonster = null; // { id:number, name:string, url?:string, hp, max_hp, atk, def, money_pool, exp_pool, counter_chance, started_at, damage: Map<uid, dmg>, endsAt:number, lastHitter:number|null, reward_item_id?:number, reward_items?:number[], question_bank_id?:number|null, question_time_ms?:number, currentQuestion?:any, qAnswered?:Set<number> }
 const MONSTER_DURATION_MS = 60_000;
 
 function spawnMonsterByTemplate(tplId) {
@@ -170,9 +170,11 @@ function spawnMonsterByTemplate(tplId) {
   const res = db.prepare('INSERT INTO monsters (hp, max_hp, atk, def, reward_pool, started_at) VALUES (?,?,?,?,?,?)')
     .run(base.hp, base.max_hp, base.atk, base.def, base.money_pool, now);
   const id = Number(res.lastInsertRowid);
-  activeMonster = { id, ...base, started_at: now, damage: new Map(), cell: Math.floor(Math.random()*9), endsAt: now + MONSTER_DURATION_MS, lastHitter: null };
+  activeMonster = { id, ...base, started_at: now, damage: new Map(), endsAt: now + MONSTER_DURATION_MS, lastHitter: null, question_bank_id: tpl.question_bank_id || null, question_time_ms: tpl.question_time_ms || 0, currentQuestion: null, qAnswered: new Set() };
   broadcast('monster.spawn', { text: `怪物出现：${tpl.name}！HP ${activeMonster.hp}/${activeMonster.max_hp} 金币池 ${activeMonster.money_pool}` });
-  broadcast('monster.state', { hp: activeMonster.hp, max_hp: activeMonster.max_hp, cell: activeMonster.cell, endsAt: activeMonster.endsAt, url: activeMonster.url });
+  broadcast('monster.state', { name: tpl.name, hp: activeMonster.hp, max_hp: activeMonster.max_hp, endsAt: activeMonster.endsAt, url: activeMonster.url });
+  // Start quiz flow
+  try { selectAndBroadcastQuestion(); } catch {}
 }
 
 function endMonster(killed) {
@@ -269,12 +271,7 @@ function tickMonster() {
     endMonster(false);
     return;
   }
-  // move position roughly every second
-  if (!activeMonster._nextMoveAt || now >= activeMonster._nextMoveAt) {
-    activeMonster.cell = Math.floor(Math.random()*9);
-    activeMonster._nextMoveAt = now + 900 + Math.floor(Math.random()*600);
-    broadcast('monster.state', { hp: activeMonster.hp, max_hp: activeMonster.max_hp, cell: activeMonster.cell, endsAt: activeMonster.endsAt, url: activeMonster.url });
-  }
+  // Quiz mode: no moving grid; optionally could time questions, but basic loop only checks timeout
 }
 
 // Passive money per minute
@@ -459,39 +456,52 @@ wss.on('connection', (ws) => {
       return;
     }
 
-    if (type === 'monster.hit') {
+    if (type === 'monster.answer') {
       if (!activeMonster) return;
-      const { cell } = payload || {};
       const now = Date.now();
       if (now > activeMonster.endsAt) { endMonster(false); return; }
-      if (cell !== activeMonster.cell) return; // miss
       const baseBefore = getCharBase(uid);
-      if (baseBefore && (baseBefore.dead_remaining_ms||0) > 0) return; // dead cannot attack
+      if (baseBefore && (baseBefore.dead_remaining_ms||0) > 0) return; // dead cannot participate
       const ch = getChar(uid);
       if (!ch) return;
-      // Player attack with crit
-      let dmg = Math.max(1, (ch.atk || 0) - activeMonster.def);
-      const isCrit = Math.random() < chanceFromIndex(ch.crit_index||0);
-      if (isCrit) dmg = Math.floor(dmg * 2.2);
-      activeMonster.hp = Math.max(0, activeMonster.hp - dmg);
-      const prev = activeMonster.damage.get(uid) || 0;
-      activeMonster.damage.set(uid, prev + dmg);
-      activeMonster.lastHitter = uid;
-      if (isCrit) {
-        sendTo(uid, 'system', { id: uuidv4(), type:'system', content: `你对怪物暴击，造成 ${dmg} 伤害！`, ts: Date.now() });
-      }
-      if (activeMonster.hp > 0 && Math.random() < (activeMonster.counter_chance || 0)) {
-        // Player may dodge counter
+      const q = activeMonster.currentQuestion;
+      if (!q) return;
+      if (activeMonster.qAnswered?.has(uid)) return; // already answered this question
+      const submitted = (payload?.answer);
+      const correct = isAnswerCorrect(q, submitted);
+      activeMonster.qAnswered?.add(uid);
+      if (correct) {
+        // Player deals damage (no counter on correct)
+        let dmg = Math.max(1, (ch.atk || 0) - activeMonster.def);
+        const isCrit = Math.random() < chanceFromIndex(ch.crit_index||0);
+        if (isCrit) dmg = Math.floor(dmg * 2.2);
+        activeMonster.hp = Math.max(0, activeMonster.hp - dmg);
+        const prev = activeMonster.damage.get(uid) || 0;
+        activeMonster.damage.set(uid, prev + dmg);
+        activeMonster.lastHitter = uid;
+        sendTo(uid, 'system', { id: uuidv4(), type:'system', content: `回答正确！${isCrit?'暴击，':''}对怪物造成 ${dmg} 伤害。`, ts: Date.now() });
+        if (activeMonster.hp <= 0) {
+          endMonster(true);
+          return;
+        } else {
+          broadcast('monster.state', { name: activeMonster.name, hp: activeMonster.hp, max_hp: activeMonster.max_hp, endsAt: activeMonster.endsAt, url: activeMonster.url });
+        }
+        // schedule next question after 1s
+        try {
+          if (activeMonster._nextQTimer) clearTimeout(activeMonster._nextQTimer);
+          activeMonster._nextQTimer = setTimeout(() => { try { selectAndBroadcastQuestion(); } catch {} }, 1000);
+        } catch {}
+      } else {
+        // Wrong: monster attacks player (with dodge chance)
         const dodged = Math.random() < chanceFromIndex(ch.dodge_index||0);
         if (dodged) {
-          sendTo(uid, 'system', { id: uuidv4(), type:'system', content: '你躲闪了怪物的反击！', ts: Date.now() });
+          sendTo(uid, 'system', { id: uuidv4(), type:'system', content: '回答错误，但你躲闪了怪物的攻击！', ts: Date.now() });
         } else {
           const cdmg = Math.max(1, (activeMonster.atk||0) - (ch.def||0));
           const base = getCharBase(uid);
           let newHp = Math.max(0, (base.hp||0) - cdmg);
           let deadRemaining = base.dead_remaining_ms || 0;
           if (newHp <= 0) {
-            // death: set countdown in ms
             const reviveSec = 15 + 5 * Math.max(1, base.level||1);
             deadRemaining = reviveSec * 1000;
           }
@@ -499,21 +509,17 @@ wss.on('connection', (ws) => {
           const eff = getChar(uid);
           sendTo(uid, 'player.update', { level: eff.level, exp: eff.exp, money: eff.money, atk: eff.atk, def: eff.def, hp: newHp, maxHp: eff.hp_max, dodge_index: eff.dodge_index, crit_index: eff.crit_index, deadRemaining });
           if (newHp <= 0) {
-            sendTo(uid, 'system', { id: uuidv4(), type:'system', content: `你已阵亡，等待复活……`, ts: Date.now() });
+            sendTo(uid, 'system', { id: uuidv4(), type:'system', content: `回答错误，你已阵亡，等待复活……`, ts: Date.now() });
             try {
               const name = (online.get(uid)?.username) || (db.prepare('SELECT username FROM users WHERE id=?').get(uid)?.username) || uid;
               pushSystem(`玩家 ${name} 阵亡`);
             } catch {}
           } else {
-            sendTo(uid, 'system', { id: uuidv4(), type:'system', content: `你被怪物击中，受到 ${cdmg} 伤害。`, ts: Date.now() });
+            sendTo(uid, 'system', { id: uuidv4(), type:'system', content: `回答错误，受到怪物 ${cdmg} 伤害。`, ts: Date.now() });
           }
         }
       }
-      if (activeMonster.hp <= 0) {
-        endMonster(true);
-      } else {
-        broadcast('monster.state', { hp: activeMonster.hp, max_hp: activeMonster.max_hp, cell: activeMonster.cell, endsAt: activeMonster.endsAt });
-      }
+      // do not change question on wrong answer; wait until someone answers correctly
       return;
     }
   });
@@ -558,3 +564,56 @@ setInterval(() => {
 server.listen(PORT, () => {
   console.log(`[WS] listening on :${PORT}`);
 });
+
+// Quiz helpers
+function getRandomQuestion(bankId) {
+  try {
+    if (bankId) {
+      return db.prepare('SELECT * FROM questions WHERE bank_id=? ORDER BY RANDOM() LIMIT 1').get(bankId);
+    }
+    // fallback: any enabled bank
+    const b = db.prepare('SELECT id FROM question_banks WHERE enabled=1 ORDER BY RANDOM() LIMIT 1').get();
+    if (b) return db.prepare('SELECT * FROM questions WHERE bank_id=? ORDER BY RANDOM() LIMIT 1').get(b.id);
+    return db.prepare('SELECT * FROM questions ORDER BY RANDOM() LIMIT 1').get();
+  } catch { return null; }
+}
+
+function selectAndBroadcastQuestion() {
+  if (!activeMonster) return;
+  const q = getRandomQuestion(activeMonster.question_bank_id || null);
+  if (!q) return;
+  activeMonster.currentQuestion = q;
+  activeMonster.qAnswered = new Set();
+  let options = null;
+  try { options = q.options ? JSON.parse(q.options) : null; } catch { options = null; }
+  broadcast('monster.question', { id: q.id, type: q.type, content: q.content, options });
+}
+
+function isAnswerCorrect(q, submitted) {
+  // Parse correct answer
+  let corr;
+  try { corr = JSON.parse(q.answer); } catch { corr = q.answer; }
+  const type = (q.type||'').toLowerCase();
+  // normalize helpers
+  const normStr = (s) => String(s??'').trim().toLowerCase();
+  if (type === 'single') {
+    return normStr(submitted) === normStr(corr);
+  } else if (type === 'true_false') {
+    const toBool = (v) => typeof v === 'boolean' ? v : (String(v).toLowerCase()==='true' || String(v).trim()==='对');
+    return toBool(submitted) === toBool(corr);
+  } else if (type === 'multiple') {
+    const arrSub = Array.isArray(submitted) ? submitted.map(normStr) : String(submitted||'').split(',').map(normStr).filter(Boolean);
+    const arrCorr = Array.isArray(corr) ? corr.map(normStr) : String(corr||'').split(',').map(normStr).filter(Boolean);
+    if (arrSub.length !== arrCorr.length) return false;
+    const setC = new Set(arrCorr);
+    for (const a of arrSub) if (!setC.has(a)) return false;
+    return true;
+  } else if (type === 'fill') {
+    if (Array.isArray(corr)) {
+      const n = normStr(submitted);
+      return corr.map(normStr).includes(n);
+    }
+    return normStr(submitted) === normStr(corr);
+  }
+  return false;
+}

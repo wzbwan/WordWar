@@ -12,13 +12,15 @@ type Store = {
   players: User[]; // all players from API
   player?: Player;
   coinrain?: { event_id: string | number; endAt: number };
-  monster?: { hp: number; max_hp: number; cell: number; endsAt: number; url?: string|null };
+  monster?: { name?: string; hp: number; max_hp: number; cell?: number; endsAt: number; url?: string|null };
+  question?: { id: number; type: string; content: string; options?: string[]|null };
   pushMsg: (m: Msg) => void;
   setUsers: (u: User[]) => void;
   setPlayers: (u: User[]) => void;
   setPlayer: (p: Player) => void;
   setCoinrain: (c?: { event_id: string; endAt: number }) => void;
-  setMonster: (m?: { hp: number; max_hp: number; cell: number; endsAt: number; url?: string|null }) => void;
+  setMonster: (m?: { name?: string; hp: number; max_hp: number; cell?: number; endsAt: number; url?: string|null }) => void;
+  setQuestion: (q?: { id: number; type: string; content: string; options?: string[]|null }) => void;
 };
 
 const useStore = create<Store>((set) => ({
@@ -31,6 +33,7 @@ const useStore = create<Store>((set) => ({
   setPlayer: (p) => set({ player: p }),
   setCoinrain: (c) => set({ coinrain: c }),
   setMonster: (m) => set({ monster: m }),
+  setQuestion: (q) => set({ question: q }),
 }));
 
 function useToken() {
@@ -65,7 +68,7 @@ export default function ChatPage() {
   const token = useToken();
   const [input, setInput] = useState("");
   const wsRef = useRef<WebSocket | null>(null);
-  const { messages, users, players, player, pushMsg, setUsers, setPlayers, setPlayer, coinrain, setCoinrain, monster, setMonster } = useStore();
+  const { messages, users, players, player, pushMsg, setUsers, setPlayers, setPlayer, coinrain, setCoinrain, monster, setMonster, question, setQuestion } = useStore();
   const [pvpDetails, setPvpDetails] = useState<string[] | null>(null);
   const [nextHitAt, setNextHitAt] = useState<number>(0);
   const listRef = useRef<HTMLDivElement | null>(null);
@@ -75,6 +78,7 @@ export default function ChatPage() {
   const [chooseJobOpen, setChooseJobOpen] = useState(false);
   const [battle, setBattle] = useState<{summary: string; logs: string[]; left:string; right:string} | null>(null);
   const [jobs, setJobs] = useState<Record<string, any>>({});
+  const [answeredThis, setAnsweredThis] = useState(false);
 
   useEffect(() => {
     if (!token) {
@@ -137,10 +141,15 @@ export default function ChatPage() {
         pushMsg({ id: uid(), type: "system", content: msg.payload.text, ts: Date.now() });
       }
       if (msg.type === "monster.state") {
-        setMonster({ hp: msg.payload.hp, max_hp: msg.payload.max_hp, cell: msg.payload.cell, endsAt: msg.payload.endsAt, url: msg.payload.url });
+        setMonster({ name: msg.payload.name, hp: msg.payload.hp, max_hp: msg.payload.max_hp, cell: msg.payload.cell, endsAt: msg.payload.endsAt, url: msg.payload.url });
+      }
+      if (msg.type === "monster.question") {
+        setQuestion({ id: msg.payload.id, type: msg.payload.type, content: msg.payload.content, options: msg.payload.options||null });
+        setAnsweredThis(false);
       }
       if (msg.type === "monster.end") {
         setMonster(undefined);
+        setQuestion(undefined);
         pushMsg({ id: uid(), type: "system", content: msg.payload.text, ts: Date.now() });
       }
     };
@@ -203,11 +212,13 @@ export default function ChatPage() {
     location.href = "/";
   }
 
-  function hitMonster(cell: number) {
-    const now = Date.now();
-    if (now < nextHitAt) return;
-    setNextHitAt(now + 1500);
-    wsRef.current?.send(JSON.stringify({ type: "monster.hit", payload: { cell } }));
+  // Quiz answer submission
+  const [quizAnswer, setQuizAnswer] = useState<any>(null);
+  function submitAnswer() {
+    if (!question) return;
+    wsRef.current?.send(JSON.stringify({ type: "monster.answer", payload: { questionId: question.id, answer: quizAnswer } }));
+    setAnsweredThis(true);
+    // prevent duplicate by disabling UI client-side; actual dedupe on server as well
   }
 
   function openDetails(details?: string[]) {
@@ -386,27 +397,73 @@ export default function ChatPage() {
             <button disabled={!!(player?.deadRemaining && player.deadRemaining>0)} onClick={hitCoin} className="mt-3 w-full py-2 bg-amber-600 hover:bg-amber-500 rounded disabled:opacity-50">抢金币</button>
           )}
           {monster ? (
-            <div className="mt-3">
-              <div className="grid grid-cols-3 gap-2">
-                {Array.from({ length: 9 }).map((_, i) => (
-                   <div key={i} className="aspect-square bg-slate-900 rounded flex items-center justify-center cursor-pointer select-none"
-                        onClick={() => { if (!(player?.deadRemaining && player.deadRemaining>0)) hitMonster(i); }}>
-                     {monster.cell === i && (
-                       monster.url ? (
-                         <img src={monster.url} alt="monster" className="w-14 h-14 object-contain" />
-                       ) : (
-                         <span className="text-2xl">👾</span>
-                       )
-                     )}
-                   </div>
-                ))}
+            <div className="mt-3 space-y-2">
+              <div className="flex items-center gap-3">
+                {monster.url ? <img src={monster.url} alt="monster" className="w-10 h-10 object-contain" /> : <span className="text-2xl">👾</span>}
+                <div className="text-slate-200 font-semibold">{monster.name || '怪物'}</div>
               </div>
-              <div className="mt-3 h-3 bg-slate-900 rounded">
+              {question ? (
+                <div className="space-y-2">
+                  <div className="text-sm text-slate-200">{question.content}</div>
+                  <div className="text-xs text-slate-400">类型：{question.type}</div>
+                  <div className="space-y-1">
+                    {(() => {
+                      const t = (question.type||'').toLowerCase();
+                      if (t === 'single' || t === 'true_false') {
+                        const opts = question.options && question.options.length ? question.options : (t==='true_false'? ['对','错'] : []);
+                        return (
+                          <div className="space-y-2">
+                            {opts.map((opt, idx) => (
+                              <button key={idx} disabled={answeredThis || !!(player?.deadRemaining && player.deadRemaining>0)} className="w-full text-left px-3 py-2 bg-slate-900 hover:bg-slate-800 border border-slate-700 rounded disabled:opacity-50"
+                                onClick={() => {
+                                  if (answeredThis) return;
+                                  setQuizAnswer(opt);
+                                  wsRef.current?.send(JSON.stringify({ type: 'monster.answer', payload: { questionId: question.id, answer: opt } }));
+                                  setAnsweredThis(true);
+                                }}>
+                                {opt}
+                              </button>
+                            ))}
+                          </div>
+                        );
+                      } else if (t === 'multiple') {
+                        const opts = question.options || [];
+                        const ans = Array.isArray(quizAnswer) ? quizAnswer : [];
+                        return (
+                          <div className="space-y-2">
+                            {opts.map((opt, idx) => (
+                              <button key={idx} disabled={answeredThis || !!(player?.deadRemaining && player.deadRemaining>0)} className={`w-full text-left px-3 py-2 border rounded disabled:opacity-50 ${ans.includes(opt)?'bg-slate-800 border-emerald-600':'bg-slate-900 hover:bg-slate-800 border-slate-700'}`}
+                                onClick={(e) => {
+                                  e.preventDefault();
+                                  const cur = Array.isArray(quizAnswer) ? quizAnswer : [];
+                                  if (cur.includes(opt)) setQuizAnswer(cur.filter((x:any)=>x!==opt));
+                                  else setQuizAnswer([...cur, opt]);
+                                }}>
+                                {opt}
+                              </button>
+                            ))}
+                            <button disabled={answeredThis || !!(player?.deadRemaining && player.deadRemaining>0)} onClick={() => submitAnswer()} className="w-full py-2 bg-indigo-600 hover:bg-indigo-500 rounded disabled:opacity-50">提交答案</button>
+                          </div>
+                        );
+                      } else {
+                        return (
+                          <div className="space-y-2">
+                            <input className="w-full px-2 py-1 bg-slate-900 border border-slate-700 rounded" placeholder="请输入答案" onChange={e=>setQuizAnswer(e.target.value)} />
+                            <button disabled={answeredThis || !!(player?.deadRemaining && player.deadRemaining>0)} onClick={() => submitAnswer()} className="w-full py-2 bg-indigo-600 hover:bg-indigo-500 rounded disabled:opacity-50">提交答案</button>
+                          </div>
+                        );
+                      }
+                    })()}
+                  </div>
+                </div>
+              ) : (
+                <div className="text-sm text-slate-400">等待出题…</div>
+              )}
+              <div className="h-3 bg-slate-900 rounded">
                 <div className="h-full bg-rose-600 rounded" style={{ width: `${Math.max(0, Math.min(100, Math.round((monster.hp / monster.max_hp) * 100)))}%` }} />
               </div>
-              <div className="flex items-center justify-between text-xs text-slate-400 mt-1">
+              <div className="flex items-center justify-between text-xs text-slate-400">
                 <span>HP {monster.hp}/{monster.max_hp}</span>
-                <span>{Math.max(0, Math.ceil((nextHitAt - Date.now())/100)/10)}s 冷却</span>
               </div>
             </div>
           ) : (!coinrain && (
